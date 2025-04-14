@@ -142,15 +142,16 @@ class TrainerModule:
     def train_model(self,
                     train_loader,
                     val_loader,
-                    num_epochs=200):
+                    num_epochs=200,
+                    start_from=0):
         # Train model for defined number of epochs
         # We first need to create optimizer and the scheduler for the given number of epochs
-        self.init_optimizer(num_epochs, len(train_loader))
+        self.init_optimizer(num_epochs - start_from, len(train_loader))
         # Track best eval accuracy
         best_eval = 0.0
-        for epoch_idx in tqdm(range(1, num_epochs+1)):
+        for epoch_idx in tqdm(range(start_from, num_epochs+1)):
             self.train_epoch(train_loader, epoch=epoch_idx)
-            if epoch_idx % 2 == 0:
+            if epoch_idx % 5 == 0:
                 eval_acc = self.eval_model(val_loader)
                 self.logger.add_scalar('val/acc', eval_acc, global_step=epoch_idx)
                 if eval_acc >= best_eval:
@@ -162,7 +163,7 @@ class TrainerModule:
         # Train model for one epoch, and log avg loss and accuracy
         metrics = defaultdict(list)
         for batch in tqdm(train_loader, desc="Training", leave=False):
-            self.state, loss, acc = self.train_step(self.state, batch)
+            self.state, loss, acc = self.train_step(self.state, tf_to_jax(batch))
             metrics["loss"].append(loss)
             metrics["acc"].append(acc)
         for key in metrics:
@@ -173,7 +174,7 @@ class TrainerModule:
         # Test model on all images of a data loader and return avg loss
         correct_class, count = 0, 0
         for batch in data_loader:
-            acc = self.eval_step(self.state, batch)
+            acc = self.eval_step(self.state, tf_to_jax(batch))
             correct_class += acc * batch[0].shape[0]
             count += batch[0].shape[0]
         eval_acc = (correct_class / count).item()
@@ -184,25 +185,29 @@ class TrainerModule:
         abs_path = os.path.abspath(self.log_dir)
         checkpoints.save_checkpoint(ckpt_dir=abs_path,
                                     target={'params': self.state.params,
-                                            'batch_stats': self.state.batch_stats},
+                                            'batch_stats': self.state.batch_stats,
+                                            'step': step},
                                     step=step,
                                     overwrite=True)
 
-    def load_model(self, pretrained=False):
-        # Load model. We use different checkpoint for pretrained models
-        if not pretrained:
-            abs_log_dir = os.path.abspath(self.log_dir)
-            state_dict = checkpoints.restore_checkpoint(ckpt_dir=abs_log_dir, target=None)
-        else:
-            abs_ckpt_dir = os.path.abspath(os.path.join(CHECKPOINT_PATH, f'{self.model_name}.ckpt'))
-            state_dict = checkpoints.restore_checkpoint(ckpt_dir=abs_ckpt_dir, target=None)
+    def load_model(self):
+        abs_ckpt_dir = os.path.abspath(os.path.join(CHECKPOINT_PATH, self.model_name))
+        state_dict = checkpoints.restore_checkpoint(ckpt_dir=abs_ckpt_dir, target=None)
         self.state = TrainState.create(apply_fn=self.model.apply,
                                        params=state_dict['params'],
                                        batch_stats=state_dict['batch_stats'],
-                                       tx=self.state.tx if self.state else optax.sgd(0.1)   # Default optimizer
-                                      )
+                                       tx=self.state.tx if self.state else optax.sgd(0.1))
+        return state_dict.get("step", 0)
 
     def checkpoint_exists(self):
         # Check whether a pretrained model exist for this autoencoder
-        abs_ckpt_dir = os.path.abspath(os.path.join(CHECKPOINT_PATH, f'{self.model_name}.ckpt'))
-        return os.path.isfile(abs_ckpt_dir)
+        abs_ckpt_dir = os.path.abspath(os.path.join(CHECKPOINT_PATH, self.model_name))
+        print(abs_ckpt_dir)
+        print(os.path.exists(abs_ckpt_dir))
+        return os.path.exists(abs_ckpt_dir)
+    
+
+def tf_to_jax(batch):
+    """Конвертирует TF-батч в JAX-совместимый формат."""
+    images, labels = batch[0]._numpy(), batch[1]._numpy()
+    return jax.device_put(images), jax.device_put(labels)

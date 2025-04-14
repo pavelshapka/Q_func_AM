@@ -1,66 +1,35 @@
-import os
+import jax
+import jax.numpy as jnp
+import tensorflow_datasets as tfds
+import tensorflow as tf
 
-import numpy as np
-import torch
-import torch.utils.data as data
-from torchvision import transforms
-from torchvision.datasets import CIFAR10
-
-DATASET_PATH = "./datasets"
-os.makedirs(DATASET_PATH, exist_ok=True)
-
-train_dataset = CIFAR10(root=DATASET_PATH, train=True, download=True)
-DATA_MEANS = (train_dataset.data / 255.0).mean(axis=(0,1,2))
-DATA_STD = (train_dataset.data / 255.0).std(axis=(0,1,2))
-del train_dataset
+# Константы для нормализации
+DATA_MEANS = jnp.array([0.4914, 0.4822, 0.4465])  # Пример для CIFAR-10
+DATA_STD = jnp.array([0.2470, 0.2435, 0.2616])
 
 
-def image_to_numpy(img: torch.Tensor) -> np.ndarray:
-    img = np.array(img, dtype=np.float32)
-    img = (img - DATA_MEANS) / DATA_STD
-    return img
+def normalize(image, label):
+    image = tf.cast(image, tf.float32) / 255.0 
 
-def numpy_collate(batch) -> np.ndarray:
-    if isinstance(batch[0], np.ndarray):
-        return np.stack(batch)
-    elif isinstance(batch[0], (tuple,list)):
-        transposed = zip(*batch)
-        return [numpy_collate(samples) for samples in transposed]
-    else:
-        return np.array(batch)
+    image = (image - DATA_MEANS) / DATA_STD
+    return image.numpy(), label.numpy()
 
-def get_dataset() -> tuple[data.DataLoader, data.DataLoader, data.DataLoader]:
-    test_augmentations = image_to_numpy
-    train_augmentations = transforms.Compose([transforms.RandomHorizontalFlip(),
-                                              transforms.RandomResizedCrop((32, 32), scale=(0.8, 1.0), ratio=(0.9, 1.1)),
-                                              image_to_numpy])
+
+def get_datasets(batch_size=128, num_workers=2):
+    train_ds = tfds.load('cifar10', split='train[:90%]', as_supervised=True)
+    val_ds = tfds.load('cifar10', split='train[90%:]', as_supervised=True)
+    test_ds = tfds.load('cifar10', split='test', as_supervised=True)
+
+    def get_dataset(ds, train=True):
+        if train:
+            ds = ds.shuffle(10000)
+        ds = ds.map(normalize, num_parallel_calls=tf.data.AUTOTUNE)
+        ds = ds.batch(batch_size)
+        ds = ds.prefetch(tf.data.AUTOTUNE)
+        return ds
     
-    train_ds = CIFAR10(root=DATASET_PATH, train=True, transform=train_augmentations)
-    val_ds = CIFAR10(root=DATASET_PATH, train=True, transform=test_augmentations)
-    train_set, _ = torch.utils.data.random_split(train_ds, [45000, 5000], generator=torch.Generator().manual_seed(42))
-    _, val_set = torch.utils.data.random_split(val_ds, [45000, 5000], generator=torch.Generator().manual_seed(42))
-
-    test_set = CIFAR10(root=DATASET_PATH, train=False, transform=test_augmentations)
-
-    train_loader = data.DataLoader(train_set,
-                                   batch_size=128,shuffle=True,
-                                   drop_last=True,
-                                   collate_fn=numpy_collate,
-                                   num_workers=2,
-                                   persistent_workers=True)
-    val_loader = data.DataLoader(val_set,
-                                 batch_size=128,
-                                 shuffle=False,
-                                 drop_last=False,
-                                 collate_fn=numpy_collate,
-                                 num_workers=2,
-                                 persistent_workers=True)
-    test_loader = data.DataLoader(test_set,
-                                  batch_size=128,
-                                  shuffle=False,
-                                  drop_last=False,
-                                  collate_fn=numpy_collate,
-                                  num_workers=2,
-                                  persistent_workers=True)
+    train_ds = get_dataset(train_ds, train=True)
+    val_ds = get_dataset(val_ds, train=False)
+    test_ds = get_dataset(test_ds, train=False)
     
-    return train_loader, val_loader, test_loader
+    return train_ds, val_ds, test_ds
