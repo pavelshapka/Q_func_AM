@@ -21,7 +21,7 @@ def get_base_dataloaders(batch_size=128, num_workers=2):
 
     def get_dataloader(ds, train=True):
         if train:
-            ds = ds.shuffle(10000)
+            ds = ds.shuffle(10_000)
         ds = ds.map(normalize, num_parallel_calls=tf.data.AUTOTUNE)
         ds = ds.batch(batch_size)
         ds = ds.prefetch(tf.data.AUTOTUNE)

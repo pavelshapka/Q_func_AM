@@ -27,10 +27,10 @@ def generate_trajectory(image,
     return transitions, rewards
 
 
-def get_sars_dataloaders(batch_size: int=11,
-                        reward: float=1.,
-                        gamma: float=0.99,
-                        num_steps: int=10):
+def get_sars_dataloaders(batch_size: int=128,
+                         reward: float=1.,
+                         gamma: float=0.99,
+                         num_steps: int=10):
     train_ds = tfds.load('cifar10', split="train", as_supervised=True)
     test_ds = tfds.load('cifar10', split="test", as_supervised=True)
 
@@ -44,7 +44,7 @@ def get_sars_dataloaders(batch_size: int=11,
         ds = ds.flat_map(lambda transitions, rewards: tf.data.Dataset.from_tensor_slices((transitions, rewards)))
 
         if train:
-            ds = ds.shuffle(buffer_size=5000)
+            ds = ds.shuffle(buffer_size=10_000)
 
         ds = ds.batch(batch_size)
         ds = ds.prefetch(tf.data.AUTOTUNE)
