@@ -13,31 +13,35 @@ def generate_trajectory(image,
 
     z = tf.random.normal(tf.shape(image), dtype=image.dtype)
     ts = tf.linspace(0.0, 1.0, num_steps)
-    trajectory = [z * (1 - t) + image * t for t in ts]
+    ts = tf.reshape(ts, (num_steps, 1, 1, 1))
 
-    transitions = []
-    for i in range(num_steps-1):
-        s = trajectory[i]
-        s_hat = trajectory[i+1]
-        a = s_hat - s
-        transitions.append((s, a, reward * gamma**(num_steps-1-i), s_hat))
+    trajectory = z * (1 - ts) + image * ts # [None, 32, 32, 3] * [num_steps, None, None, None]
 
-    return transitions
+    s = trajectory[:-1]     # [num_steps-1, 32, 32, 3]
+    s_hat = trajectory[1:]  # [num_steps-1, 32, 32, 3]
+    a = s_hat - s           # [num_steps-1, 32, 32, 3]
+    rewards = reward * (gamma ** tf.reverse(tf.range(num_steps-1, dtype=tf.float32), axis=[0])) # [num_steps-1]
+
+    transitions = tf.concat([s, a, s_hat], axis=-1) # [num_steps-1, 4 * 32 * 32]
+    
+    return transitions, rewards
 
 
-def get_sars_dataloaders(batch_size: int=128,
+def get_sars_dataloaders(batch_size: int=11,
                         reward: float=1.,
                         gamma: float=0.99,
                         num_steps: int=10):
-    train_ds = tfds.load('cifar10', as_supervised=True)
-    test_ds = tfds.load('cifar10', as_supervised=True)
+    train_ds = tfds.load('cifar10', split="train", as_supervised=True)
+    test_ds = tfds.load('cifar10', split="test", as_supervised=True)
 
     def prepare_ds(ds, train=True):
+        ds = ds.map(normalize, num_parallel_calls=tf.data.AUTOTUNE)
         ds = ds.map(lambda image, _: generate_trajectory(image=image,
                                                      reward=reward,
                                                      gamma=gamma,
-                                                     num_steps=num_steps))
-        ds = ds.flat_map(lambda transitions: tf.data.Dataset.from_tensor_slices(transitions))
+                                                     num_steps=num_steps),
+                    num_parallel_calls=tf.data.AUTOTUNE)
+        ds = ds.flat_map(lambda transitions, rewards: tf.data.Dataset.from_tensor_slices((transitions, rewards)))
 
         if train:
             ds = ds.shuffle(buffer_size=5000)
@@ -46,5 +50,5 @@ def get_sars_dataloaders(batch_size: int=128,
         ds = ds.prefetch(tf.data.AUTOTUNE)
         return ds
     
-    return prepare_ds(train_ds, train=True), prepare_ds(test_ds, train=False)
+    return prepare_ds(train_ds, train=False), prepare_ds(test_ds, train=False)
 
