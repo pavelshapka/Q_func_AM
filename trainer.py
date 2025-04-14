@@ -2,6 +2,7 @@ import os
 
 from typing import Any
 from collections import defaultdict
+from pathlib import Path
 
 import numpy as np
 
@@ -57,8 +58,8 @@ class TrainerModule:
         # Create empty model. Note: no parameters yet
         self.model = self.model_class(**self.model_hparams)
         # Prepare logging
-        self.log_dir = os.path.join(CHECKPOINT_PATH, self.model_name)
-        self.logger = SummaryWriter(log_dir=self.log_dir)
+        self.checkpoint_dir = os.path.join(CHECKPOINT_PATH, self.model_name)
+        self.logger = SummaryWriter(log_dir=self.checkpoint_dir)
         # Create jitted training and eval functions
         self.create_functions()
         # Initialize model
@@ -149,7 +150,7 @@ class TrainerModule:
         self.init_optimizer(num_epochs - start_from, len(train_loader))
         # Track best eval accuracy
         best_eval = 0.0
-        for epoch_idx in tqdm(range(start_from, num_epochs+1)):
+        for epoch_idx in tqdm(range(start_from, num_epochs+1), initial=start_from, total=num_epochs):
             self.train_epoch(train_loader, epoch=epoch_idx)
             if epoch_idx % 5 == 0:
                 eval_acc = self.eval_model(val_loader)
@@ -181,17 +182,17 @@ class TrainerModule:
         return eval_acc
 
     def save_model(self, step=0):
-        # Save current model at certain training iteration
-        abs_path = os.path.abspath(self.log_dir)
-        checkpoints.save_checkpoint(ckpt_dir=abs_path,
-                                    target={'params': self.state.params,
-                                            'batch_stats': self.state.batch_stats,
-                                            'step': step},
+        """Save current model"""
+        abs_ckpt_dir = os.path.abspath(self.checkpoint_dir)
+        checkpoints.save_checkpoint(ckpt_dir=abs_ckpt_dir,
+                                    target={"params": self.state.params,
+                                            "batch_stats": self.state.batch_stats,
+                                            "step": step},
                                     step=step,
                                     overwrite=True)
 
     def load_model(self):
-        abs_ckpt_dir = os.path.abspath(os.path.join(CHECKPOINT_PATH, self.model_name))
+        abs_ckpt_dir = os.path.abspath(self.checkpoint_dir)
         state_dict = checkpoints.restore_checkpoint(ckpt_dir=abs_ckpt_dir, target=None)
         self.state = TrainState.create(apply_fn=self.model.apply,
                                        params=state_dict['params'],
@@ -203,8 +204,9 @@ class TrainerModule:
         # Check whether a pretrained model exist for this autoencoder
         abs_ckpt_dir = os.path.abspath(os.path.join(CHECKPOINT_PATH, self.model_name))
         print(abs_ckpt_dir)
-        print(os.path.exists(abs_ckpt_dir))
-        return os.path.exists(abs_ckpt_dir)
+        print(any(item.is_dir() for item in Path(abs_ckpt_dir).iterdir()))
+
+        return any(item.is_dir() for item in Path(abs_ckpt_dir).iterdir())
     
 
 def tf_to_jax(batch):
