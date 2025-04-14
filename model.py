@@ -2,17 +2,9 @@ from typing import Callable
 
 import functools
 
-import jax
 import jax.numpy as jnp
-from jax import random
-
 from flax import linen as nn
-from flax.training import train_state, checkpoints
-main_rng = random.PRNGKey(42)
 
-from torchvision.datasets import CIFAR10
-
-from preprocess import get_dataset
 
 
 class ConvNxN(nn.Module):
