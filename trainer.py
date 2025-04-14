@@ -181,18 +181,21 @@ class TrainerModule:
 
     def save_model(self, step=0):
         # Save current model at certain training iteration
-        checkpoints.save_checkpoint(ckpt_dir=self.log_dir,
+        abs_path = os.path.abspath(self.log_dir)
+        checkpoints.save_checkpoint(ckpt_dir=abs_path,
                                     target={'params': self.state.params,
                                             'batch_stats': self.state.batch_stats},
                                     step=step,
-                                   overwrite=True)
+                                    overwrite=True)
 
     def load_model(self, pretrained=False):
         # Load model. We use different checkpoint for pretrained models
         if not pretrained:
-            state_dict = checkpoints.restore_checkpoint(ckpt_dir=self.log_dir, target=None)
+            abs_log_dir = os.path.abspath(self.log_dir)
+            state_dict = checkpoints.restore_checkpoint(ckpt_dir=abs_log_dir, target=None)
         else:
-            state_dict = checkpoints.restore_checkpoint(ckpt_dir=os.path.join(CHECKPOINT_PATH, f'{self.model_name}.ckpt'), target=None)
+            abs_ckpt_dir = os.path.abspath(os.path.join(CHECKPOINT_PATH, f'{self.model_name}.ckpt'))
+            state_dict = checkpoints.restore_checkpoint(ckpt_dir=abs_ckpt_dir, target=None)
         self.state = TrainState.create(apply_fn=self.model.apply,
                                        params=state_dict['params'],
                                        batch_stats=state_dict['batch_stats'],
@@ -201,4 +204,5 @@ class TrainerModule:
 
     def checkpoint_exists(self):
         # Check whether a pretrained model exist for this autoencoder
-        return os.path.isfile(os.path.join(CHECKPOINT_PATH, f'{self.model_name}.ckpt'))
+        abs_ckpt_dir = os.path.abspath(os.path.join(CHECKPOINT_PATH, f'{self.model_name}.ckpt'))
+        return os.path.isfile(abs_ckpt_dir)

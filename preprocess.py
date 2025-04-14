@@ -45,21 +45,22 @@ def get_dataset() -> tuple[data.DataLoader, data.DataLoader, data.DataLoader]:
     train_loader = data.DataLoader(train_set,
                                    batch_size=128,shuffle=True,
                                    drop_last=True,
-                                   collate_fn=numpy_collate,num_workers=8,
+                                   collate_fn=numpy_collate,
+                                   num_workers=2,
                                    persistent_workers=True)
     val_loader = data.DataLoader(val_set,
                                  batch_size=128,
                                  shuffle=False,
                                  drop_last=False,
                                  collate_fn=numpy_collate,
-                                 num_workers=4,
+                                 num_workers=2,
                                  persistent_workers=True)
     test_loader = data.DataLoader(test_set,
                                   batch_size=128,
                                   shuffle=False,
                                   drop_last=False,
                                   collate_fn=numpy_collate,
-                                  num_workers=4,
+                                  num_workers=2,
                                   persistent_workers=True)
     
     return train_loader, val_loader, test_loader
