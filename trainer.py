@@ -16,7 +16,7 @@ import optax
 
 from tqdm import tqdm
 
-from torch.utils.tensorboard import SummaryWriter
+import wandb
 
 
 CHECKPOINT_PATH = "./checkpoints"
@@ -59,7 +59,7 @@ class TrainerModule:
         self.model = self.model_class(**self.model_hparams)
         # Prepare logging
         self.checkpoint_dir = os.path.join(CHECKPOINT_PATH, self.model_name)
-        self.logger = SummaryWriter(log_dir=self.checkpoint_dir)
+        self.wandb_logger = wandb.init(project="cifar10", name=self.model_name)
         # Create jitted training and eval functions
         self.create_functions()
         # Initialize model
@@ -93,12 +93,12 @@ class TrainerModule:
             # Update parameters and batch statistics
             state = state.apply_gradients(grads=grads, batch_stats=new_model_state["batch_stats"])
             return state, loss, acc
-        # Eval function
-        def eval_step(state, batch):
+        
+        def eval_step(state, batch): # Eval function
             # Return the accuracy for a single batch
             _, (acc, _) = calculate_loss(state.params, state.batch_stats, batch, train=False)
             return acc
-        # jit for efficiency
+
         self.train_step = jax.jit(train_step)
         self.eval_step = jax.jit(eval_step)
 
@@ -148,17 +148,12 @@ class TrainerModule:
         # Train model for defined number of epochs
         # We first need to create optimizer and the scheduler for the given number of epochs
         self.init_optimizer(num_epochs - start_from, len(train_loader))
-        # Track best eval accuracy
-        best_eval = 0.0
+
         for epoch_idx in tqdm(range(start_from, num_epochs+1), initial=start_from, total=num_epochs):
             self.train_epoch(train_loader, epoch=epoch_idx)
             if epoch_idx % 5 == 0:
                 eval_acc = self.eval_model(val_loader)
-                self.logger.add_scalar('val/acc', eval_acc, global_step=epoch_idx)
-                if eval_acc >= best_eval:
-                    best_eval = eval_acc
-                    self.save_model(step=epoch_idx)
-                self.logger.flush()
+                self.wandb_logger.log({"epoch": epoch_idx, "val/acc": eval_acc}, step=epoch_idx)
 
     def train_epoch(self, train_loader, epoch):
         # Train model for one epoch, and log avg loss and accuracy
@@ -167,9 +162,13 @@ class TrainerModule:
             self.state, loss, acc = self.train_step(self.state, tf_to_jax(batch))
             metrics["loss"].append(loss)
             metrics["acc"].append(acc)
+        
+        log_dict = {"epoch": epoch}
         for key in metrics:
             avg_val = np.stack(jax.device_get(metrics[key])).mean()
-            self.logger.add_scalar("train/"+key, avg_val, global_step=epoch)
+            log_dict[f"train/{key}"] = avg_val
+            
+        self.wandb_logger.log(log_dict, step=epoch)
 
     def eval_model(self, data_loader):
         # Test model on all images of a data loader and return avg loss

@@ -37,14 +37,10 @@ class InceptionInput(nn.Module):
     def __call__(self, x: jnp.ndarray, train: bool = False) -> jnp.ndarray:
         convNxN = functools.partial(ConvNxN, activation=self.activation, padding="SAME", use_bias=False)
 
-        x = convNxN(N=7,
+        x = convNxN(N=3,
                     out_channels=64,
-                    stride=2,
-                    name="conv_1_7x7_2")(x, train)
-        x = nn.max_pool(inputs=x,
-                        window_shape=(3, 3),
-                        strides=(2, 2),
-                        padding="SAME")
+                    stride=1,
+                    name="conv_1_3x3_1")(x, train)
         x = convNxN(N=3,
                     out_channels=64,
                     stride=1,
@@ -53,10 +49,6 @@ class InceptionInput(nn.Module):
                     out_channels=192,
                     stride=1,
                     name="conv_2b_3x3_1")(x, train)
-        x = nn.max_pool(inputs=x,
-                        window_shape=(3, 3),
-                        strides=(2, 2),
-                        padding="SAME")
         return x
 
 class InceptionBlock(nn.Module):
@@ -183,13 +175,3 @@ class InceptionNet(nn.Module):
         x = nn.softmax(x)
 
         return x1, x2, x
-
-
-import jax
-model = InceptionNet(num_classes=10)
-
-rng = jax.random.PRNGKey(0)
-dummy_input = jnp.ones((1, 224, 224, 3))  # Пример входных данных
-params = model.init(rng, dummy_input)
-print(nn.tabulate(model, rng)(dummy_input, train=True))
-
