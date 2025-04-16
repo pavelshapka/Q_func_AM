@@ -2,7 +2,13 @@ import tensorflow as tf
 import tensorflow_datasets as tfds
 import numpy as np
 
-from .base import normalize
+from .base import CIFAR10_MEANS, CIFAR10_STD
+
+def normalize(image, label):
+    image = tf.cast(image, tf.float32) / 255.0 
+
+    image = (image - CIFAR10_MEANS) / CIFAR10_STD
+    return image, label
 
 
 def generate_trajectory(image,
