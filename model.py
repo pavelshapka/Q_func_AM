@@ -6,7 +6,6 @@ import jax.numpy as jnp
 from flax import linen as nn
 
 
-
 class ConvNxN(nn.Module):
     N: int
     out_channels: int
@@ -15,6 +14,8 @@ class ConvNxN(nn.Module):
     activation: Callable = nn.relu
     use_bias: bool = True
 
+    name: str = "ConvNxN"
+
     @nn.compact
     def __call__(self, x: jnp.ndarray, train: bool = False) -> jnp.ndarray:
         x = nn.Conv(features=self.out_channels,
@@ -22,11 +23,41 @@ class ConvNxN(nn.Module):
                     kernel_init=nn.initializers.kaiming_normal(),
                     strides=(self.stride, self.stride),
                     padding=self.padding,
-                    use_bias=self.use_bias)(x)
-        x = nn.BatchNorm()(x, use_running_average=not train)
+                    use_bias=self.use_bias,
+                    name="ConvNxN")(x)
+        x = nn.BatchNorm(use_running_average=not train,
+                         name="BatchNorm")(x)
         x = self.activation(x)
         return x
-    
+
+class InceptionInput(nn.Module):
+    activation: Callable = nn.relu
+
+    @nn.compact
+    def __call__(self, x: jnp.ndarray, train: bool = False) -> jnp.ndarray:
+        convNxN = functools.partial(ConvNxN, activation=self.activation, padding="SAME", use_bias=False)
+
+        x = convNxN(N=7,
+                    out_channels=64,
+                    stride=2,
+                    name="conv_1_7x7_2")(x, train)
+        x = nn.max_pool(inputs=x,
+                        window_shape=(3, 3),
+                        strides=(2, 2),
+                        padding="SAME")
+        x = convNxN(N=3,
+                    out_channels=64,
+                    stride=1,
+                    name="conv_2a_3x3_1")(x, train)
+        x = convNxN(N=3,
+                    out_channels=192,
+                    stride=1,
+                    name="conv_2b_3x3_1")(x, train)
+        x = nn.max_pool(inputs=x,
+                        window_shape=(3, 3),
+                        strides=(2, 2),
+                        padding="SAME")
+        return x
 
 class InceptionBlock(nn.Module):
     out_channels: dict[str, int]
@@ -36,90 +67,129 @@ class InceptionBlock(nn.Module):
 
     @nn.compact
     def __call__(self, x: jnp.ndarray, train: bool = False) -> jnp.ndarray:
-        conv_1x1 = functools.partial(ConvNxN, N=1, activation=self.activation, padding=self.padding)
-        conv_3x3 = functools.partial(ConvNxN, N=3, activation=self.activation, padding=self.padding)
-        conv_5x5 = functools.partial(ConvNxN, N=5, activation=self.activation, padding=self.padding)
+        conv_1x1 = functools.partial(ConvNxN,
+                                     N=1,
+                                     activation=self.activation,
+                                     padding=self.padding,
+                                     use_bias=False)
+        conv_3x3 = functools.partial(ConvNxN,
+                                     N=3,
+                                     activation=self.activation,
+                                     padding=self.padding,
+                                     use_bias=False)
+        conv_5x5 = functools.partial(ConvNxN,
+                                     N=5,
+                                     activation=self.activation,
+                                     padding=self.padding,
+                                     use_bias=False)
                                      
-        x_1x1 = conv_1x1(out_channels=self.out_channels["conv1x1"],
-                         stride=2,
-                         use_bias=False)(x, train)
+        x_1x1 = conv_1x1(out_channels=self.out_channels["conv1x1"], stride=1, name="conv_a_1x1_1")(x, train)
         
-        x_3x3 = conv_1x1(out_channels=self.reduced_channels["conv3x3"],
-                         stride=1,
-                         use_bias=False)(x, train)
-        x_3x3 = conv_3x3(out_channels=self.out_channels["conv3x3"],
-                         stride=2,
-                         use_bias=False)(x_3x3, train)
+        x_3x3 = conv_1x1(out_channels=self.reduced_channels["conv3x3"], stride=1, name="conv_b_3x3_1")(x, train)
+        x_3x3 = conv_3x3(out_channels=self.out_channels["conv3x3"], stride=1, name="conv_b_3x3_2")(x_3x3, train)
         
-        x_5x5 = conv_1x1(out_channels=self.reduced_channels["conv5x5"],
-                         stride=1,
-                         use_bias=False)(x, train)
-        x_5x5 = conv_5x5(out_channels=self.out_channels["conv5x5"],
-                         stride=2,
-                         use_bias=False)(x_5x5, train)
+        x_5x5 = conv_1x1(out_channels=self.reduced_channels["conv5x5"], stride=1, name="conv_c_5x5_1")(x, train)
+        x_5x5 = conv_5x5(out_channels=self.out_channels["conv5x5"], stride=1, name="conv_c_5x5_2")(x_5x5, train)
         
         x_mp = nn.max_pool(inputs=x,
                            window_shape=(3, 3),
-                           strides=(2, 2),
+                           strides=(1, 1),
                            padding="SAME")
-        x_mp = conv_1x1(out_channels=self.out_channels["max_pool"],
-                        stride=1,
-                        use_bias=False)(x_mp, train)
+        x_mp = conv_1x1(out_channels=self.out_channels["max_pool"], stride=1, name="conv_d_1x1_1")(x_mp, train)
         
         x = jnp.concatenate([x_1x1, x_3x3, x_5x5, x_mp], axis=-1)
         return x
-        
+    
+class InceptionOutput(nn.Module):
+    num_classes: int
+    activation: Callable = nn.relu
+
+    @nn.compact
+    def __call__(self, x: jnp.ndarray, train: bool = False) -> jnp.ndarray:
+        denseBlock = functools.partial(nn.Dense, kernel_init=nn.initializers.kaiming_normal(), use_bias=False)
+
+        x_out = nn.avg_pool(inputs=x,
+                            window_shape=(5, 5),
+                            strides=(3, 3))
+        x_out = ConvNxN(N=1,
+                        out_channels=128,
+                        stride=1,
+                        padding="SAME",
+                        use_bias=False,
+                        name="conv_1_1x1_1")(x_out, train)
+        x_out = jnp.reshape(x_out, (x_out.shape[0], -1))
+        x_out = denseBlock(features=1024)(x_out)
+        x_out = self.activation(x_out)
+        x_out = nn.Dropout(rate=0.7)(x_out, deterministic=not train)
+        x_out = denseBlock(features=self.num_classes)(x_out)
+        x_out = nn.softmax(x_out)
+        return x_out
+
 
 class InceptionNet(nn.Module):
     num_classes: int
     activation: Callable = nn.relu
 
     @nn.compact
-    def __call__(self, x: jnp.ndarray, train: bool = False) -> jnp.ndarray:
-        x = ConvNxN(N=3,
-                    out_channels=64,
-                    stride=1,
-                    padding="SAME",
-                    activation=self.activation,
-                    use_bias=False)(x, train)
+    def __call__(self, x: jnp.ndarray, train: bool = False) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        max_pool = functools.partial(nn.max_pool, padding="SAME")
+
+        x = InceptionInput(activation=self.activation)(x, train)
         
-        x = InceptionBlock(out_channels={"conv1x1": 16, "conv3x3": 32, "conv5x5": 8, "max_pool": 8},
-                           reduced_channels={"conv3x3": 32, "conv5x5": 16},
+        x = InceptionBlock(out_channels={"conv1x1": 64, "conv3x3": 128, "conv5x5": 32, "max_pool": 32},
+                           reduced_channels={"conv3x3": 96, "conv5x5": 16},
                            activation=self.activation)(x, train)
-        x = InceptionBlock(out_channels={"conv1x1": 24, "conv3x3": 48, "conv5x5": 12, "max_pool": 12},
-                           reduced_channels={"conv3x3": 32, "conv5x5": 16},
+        x = InceptionBlock(out_channels={"conv1x1": 128, "conv3x3": 192, "conv5x5": 96, "max_pool": 64},
+                           reduced_channels={"conv3x3": 128, "conv5x5": 32},
                            activation=self.activation)(x, train)
-        x = nn.max_pool(inputs=x,
-                        window_shape=(3, 3),
-                        strides=(2, 2),
-                        padding="SAME")
-        
-        x = InceptionBlock(out_channels={"conv1x1": 24, "conv3x3": 48, "conv5x5": 12, "max_pool": 12},
-                           reduced_channels={"conv3x3": 32, "conv5x5": 16},
-                           activation=self.activation)(x, train)
-        x = InceptionBlock(out_channels={"conv1x1": 16, "conv3x3": 48, "conv5x5": 16, "max_pool": 16},
-                           reduced_channels={"conv3x3": 32, "conv5x5": 16},
-                           activation=self.activation)(x, train)
-        x = InceptionBlock(out_channels={"conv1x1": 16, "conv3x3": 48, "conv5x5": 16, "max_pool": 16},
-                           reduced_channels={"conv3x3": 32, "conv5x5": 16},
-                           activation=self.activation)(x, train)
-        x = InceptionBlock(out_channels={"conv1x1": 32, "conv3x3": 48, "conv5x5": 24, "max_pool": 24},
-                           reduced_channels={"conv3x3": 32, "conv5x5": 16},
-                           activation=self.activation)(x, train)
-        x = nn.max_pool(inputs=x,
-                        window_shape=(3, 3),
-                        strides=(2, 2),
-                        padding="SAME")
-        
-        x = InceptionBlock(out_channels={"conv1x1": 32, "conv3x3": 64, "conv5x5": 16, "max_pool": 16},
-                           reduced_channels={"conv3x3": 48, "conv5x5": 16},
-                           activation=self.activation)(x, train)
-        x = InceptionBlock(out_channels={"conv1x1": 32, "conv3x3": 64, "conv5x5": 16, "max_pool": 16},
-                           reduced_channels={"conv3x3": 48, "conv5x5": 16},
+        x = max_pool(inputs=x,
+                     window_shape=(3, 3),
+                     strides=(2, 2))
+        x = InceptionBlock(out_channels={"conv1x1": 192, "conv3x3": 208, "conv5x5": 48, "max_pool": 64},
+                           reduced_channels={"conv3x3": 96, "conv5x5": 16},
                            activation=self.activation)(x, train)
         
-        x = x.mean(axis=(1, 2))
+        x1 = InceptionOutput(num_classes=self.num_classes, activation=self.activation)(x, train) # Первый выход
+
+        x = InceptionBlock(out_channels={"conv1x1": 160, "conv3x3": 224, "conv5x5": 64, "max_pool": 64},
+                           reduced_channels={"conv3x3": 112, "conv5x5": 24},
+                           activation=self.activation)(x, train)
+        x = InceptionBlock(out_channels={"conv1x1": 128, "conv3x3": 256, "conv5x5": 64, "max_pool": 64},
+                           reduced_channels={"conv3x3": 128, "conv5x5": 24},
+                           activation=self.activation)(x, train)
+        x = InceptionBlock(out_channels={"conv1x1": 112, "conv3x3": 288, "conv5x5": 64, "max_pool": 64},
+                           reduced_channels={"conv3x3": 144, "conv5x5": 32},
+                           activation=self.activation)(x, train)
+        
+        x2 = InceptionOutput(num_classes=self.num_classes, activation=self.activation)(x, train) # Второй выход
+
+        x = InceptionBlock(out_channels={"conv1x1": 256, "conv3x3": 320, "conv5x5": 128, "max_pool": 128},
+                           reduced_channels={"conv3x3": 160, "conv5x5": 32},
+                           activation=self.activation)(x, train)
+        x = max_pool(inputs=x,
+                     window_shape=(3, 3),
+                     strides=(2, 2))
+        x = InceptionBlock(out_channels={"conv1x1": 256, "conv3x3": 320, "conv5x5": 128, "max_pool": 128},
+                    reduced_channels={"conv3x3": 160, "conv5x5": 32},
+                    activation=self.activation)(x, train)
+        x = InceptionBlock(out_channels={"conv1x1": 384, "conv3x3": 384, "conv5x5": 128, "max_pool": 128},
+                    reduced_channels={"conv3x3": 192, "conv5x5": 48},
+                    activation=self.activation)(x, train)
+        x = jnp.mean(x, axis=(1, 2))
+        x = nn.Dropout(rate=0.4)(x, deterministic=not train)
         x = nn.Dense(features=self.num_classes,
                      kernel_init=nn.initializers.kaiming_normal(),
                      use_bias=False)(x)
-        return x
+        x = nn.softmax(x)
+
+        return x1, x2, x
+
+
+import jax
+model = InceptionNet(num_classes=10)
+
+rng = jax.random.PRNGKey(0)
+dummy_input = jnp.ones((1, 224, 224, 3))  # Пример входных данных
+params = model.init(rng, dummy_input)
+print(nn.tabulate(model, rng)(dummy_input, train=True))
+
