@@ -177,7 +177,7 @@ class TrainerModule:
                     epoch,
                     rng): # Train model for one epoch, and log avg loss and accuracy
         metrics = defaultdict(list)
-        for i, batch in tqdm(enumerate(train_loader), desc="Training", leave=False):
+        for i, batch in enumerate(train_loader):
             rng, train_rng = jax.random.split(rng)
             self.state, total_loss, acc, losses_dict = self.train_step(self.state, tf_to_jax(batch), train_rng)
 
@@ -186,7 +186,7 @@ class TrainerModule:
             for key in losses_dict:
                 metrics[key].append(losses_dict[key])
 
-            if i % 100 == 0:
+            if i % 50 == 0:
                 log_dict = {"epoch": epoch}
                 for key in metrics:
                     avg_val = np.stack(jax.device_get(metrics[key])).mean()
