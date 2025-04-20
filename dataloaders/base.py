@@ -41,7 +41,7 @@ def get_base_dataloaders(batch_size=128, num_workers=2):
                     num_parallel_calls=tf.data.AUTOTUNE)
         if train:
             ds = ds.shuffle(10_000)
-        ds = ds.batch(batch_size)
+        ds = ds.batch(batch_size, drop_remainder=True)
         ds = ds.prefetch(tf.data.AUTOTUNE)
         return ds
     

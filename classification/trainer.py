@@ -183,8 +183,8 @@ class TrainerModule:
             rng, train_rng = jax.random.split(rng)
             self.state, total_loss, acc, losses_dict = self.train_step(self.state, tf_to_jax(batch), train_rng)
 
-            self.cur_step += batch[0].shape[0]
-            if self.cur_step % 50 == 0:
+            self.cur_step += 1
+            if self.cur_step % 20 == 0:
                 log_dict = {"epoch": epoch, "train/acc": acc, "train/total_loss": total_loss}
                 for loss_key, loss_val in losses_dict.items():
                     log_dict[f"train/{loss_key}"] = loss_val
@@ -205,7 +205,8 @@ class TrainerModule:
         checkpoints.save_checkpoint(ckpt_dir=self.checkpoint_dir,
                                     target={"params": self.state.params,
                                             "batch_stats": self.state.batch_stats,
-                                            "epoch": epoch},
+                                            "epoch": epoch,
+                                            "cur_step": self.cur_step},
                                     step=epoch,
                                     overwrite=True)
 
@@ -215,6 +216,7 @@ class TrainerModule:
                                        params=state_dict['params'],
                                        batch_stats=state_dict['batch_stats'],
                                        tx=self.state.tx if self.state else optax.sgd(0.1))
+        self.cur_step = state_dict.get("cur_step", 0)
         return state_dict.get("epoch", 0)
 
     def checkpoint_exists(self) -> Optional[int]:
