@@ -22,7 +22,7 @@ def generate_trajectory(image,
                         max_num_steps: int):
     """Generate a SARS trajectory from a noise to an image"""
 
-    num_steps = tf.random.uniform((1,), minval=min_num_steps, maxval=max_num_steps, dtype=tf.int32)
+    num_steps = tf.random.uniform((), minval=min_num_steps, maxval=max_num_steps, dtype=tf.int32)
     z = tf.random.normal(tf.shape(image), dtype=image.dtype)
 
     ts = math.sqrt(2) * tf.range(num_steps, dtype=tf.float32) % 1.0
@@ -34,6 +34,7 @@ def generate_trajectory(image,
     s = trajectory[:-1]     # [num_steps-1, 32, 32, 3]
     a = trajectory[1:] - s  # [num_steps-1, 32, 32, 3]
     rewards = reward * (gamma ** tf.reverse(tf.range(num_steps-1, dtype=tf.float32), axis=[0])) # [num_steps-1]
+    rewards = tf.reshape(rewards, (-1, 1))
 
     transitions = tf.concat([s, a], axis=-1) # [num_steps-1, 2 * 32 * 32]
 
@@ -70,5 +71,5 @@ def get_sar_dataloaders(batch_size: int=128,
         ds = ds.prefetch(tf.data.AUTOTUNE)
         return ds
     
-    return prepare_ds(train_ds, train=False), prepare_ds(test_ds, train=False)
+    return prepare_ds(train_ds, train=True), prepare_ds(test_ds, train=False)
 

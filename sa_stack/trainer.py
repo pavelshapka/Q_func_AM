@@ -88,7 +88,7 @@ class TrainerModule:
             
             output, new_model_state = outs
             loss = optax.l2_loss(output, labels).mean()
-            return loss, (new_model_state)
+            return loss, new_model_state
         
         def train_step(state, batch, train_rng): # Training function
             loss_fn = lambda params: calculate_loss(params=params,
@@ -97,14 +97,13 @@ class TrainerModule:
                                                     train=True,
                                                     train_rng=train_rng)
             # Get loss, gradients for loss, and other outputs of loss function
-            ret, grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
-            loss, new_model_state = ret[0], *ret[1]
+            (loss, new_model_state), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
             # Update parameters and batch statistics
             state = state.apply_gradients(grads=grads, batch_stats=new_model_state["batch_stats"])
             return state, loss
         
         def eval_step(state, batch): # Eval function. Return the l2 loss for a single batch
-            loss, (_) = calculate_loss(state.params,
+            loss, _ = calculate_loss(state.params,
                                          state.batch_stats,
                                          batch,
                                          train=False,
@@ -154,7 +153,7 @@ class TrainerModule:
                     start_from=0):
         # Train model for defined number of epochs
         # We first need to create optimizer and the scheduler for the given number of epochs
-        self.init_optimizer(num_epochs - start_from, len(train_loader))
+        self.init_optimizer(num_epochs - start_from, 1_000)
         if self.wandb_logger is None:
             self.wandb_logger = wandb.init(project="cifar10",
                                            name=self.model_name + "_" + generate_slug(2),
