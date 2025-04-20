@@ -97,7 +97,10 @@ class InceptionOutput(nn.Module):
     activation: Callable = nn.relu
 
     @nn.compact
-    def __call__(self, x: jnp.ndarray, train: bool = False) -> jnp.ndarray:
+    def __call__(self,
+                 x: jnp.ndarray,
+                 train: bool = False,
+                 train_rng: jnp.ndarray = None) -> jnp.ndarray:
         denseBlock = functools.partial(nn.Dense, kernel_init=nn.initializers.kaiming_normal(), use_bias=False)
 
         x_out = nn.avg_pool(inputs=x,
@@ -112,18 +115,21 @@ class InceptionOutput(nn.Module):
         x_out = jnp.reshape(x_out, (x_out.shape[0], -1))
         x_out = denseBlock(features=1024)(x_out)
         x_out = self.activation(x_out)
-        x_out = nn.Dropout(rate=0.7)(x_out, deterministic=not train)
+        x_out = nn.Dropout(rate=0.7)(x_out, deterministic=not train, rng=train_rng)
         x_out = denseBlock(features=self.num_classes)(x_out)
         x_out = nn.softmax(x_out)
         return x_out
 
 
-class InceptionNet(nn.Module):
+class InceptionNetV1(nn.Module):
     num_classes: int
     activation: Callable = nn.relu
 
     @nn.compact
-    def __call__(self, x: jnp.ndarray, train: bool = False) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    def __call__(self,
+                 x: jnp.ndarray,
+                 train: bool = False,
+                 train_rng: jnp.ndarray = None) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         max_pool = functools.partial(nn.max_pool, padding="SAME")
 
         x = InceptionInput(activation=self.activation)(x, train)
@@ -141,7 +147,7 @@ class InceptionNet(nn.Module):
                            reduced_channels={"conv3x3": 96, "conv5x5": 16},
                            activation=self.activation)(x, train)
         
-        x1 = InceptionOutput(num_classes=self.num_classes, activation=self.activation)(x, train) # Первый выход
+        x1 = InceptionOutput(num_classes=self.num_classes, activation=self.activation)(x, train, train_rng) if train else None
 
         x = InceptionBlock(out_channels={"conv1x1": 160, "conv3x3": 224, "conv5x5": 64, "max_pool": 64},
                            reduced_channels={"conv3x3": 112, "conv5x5": 24},
@@ -153,7 +159,7 @@ class InceptionNet(nn.Module):
                            reduced_channels={"conv3x3": 144, "conv5x5": 32},
                            activation=self.activation)(x, train)
         
-        x2 = InceptionOutput(num_classes=self.num_classes, activation=self.activation)(x, train) # Второй выход
+        x2 = InceptionOutput(num_classes=self.num_classes, activation=self.activation)(x, train, train_rng) if train else None
 
         x = InceptionBlock(out_channels={"conv1x1": 256, "conv3x3": 320, "conv5x5": 128, "max_pool": 128},
                            reduced_channels={"conv3x3": 160, "conv5x5": 32},
@@ -168,7 +174,7 @@ class InceptionNet(nn.Module):
                     reduced_channels={"conv3x3": 192, "conv5x5": 48},
                     activation=self.activation)(x, train)
         x = jnp.mean(x, axis=(1, 2))
-        x = nn.Dropout(rate=0.4)(x, deterministic=not train)
+        x = nn.Dropout(rate=0.4)(x, deterministic=not train, rng=train_rng)
         x = nn.Dense(features=self.num_classes,
                      kernel_init=nn.initializers.kaiming_normal(),
                      use_bias=False)(x)
