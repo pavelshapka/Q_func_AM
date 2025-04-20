@@ -33,6 +33,7 @@ class TrainerModule:
                  model_name : str,
                  model_class : nn.Module,
                  model_hparams : dict[str, Any],
+                 batch_size: int,
                  optimizer_name : str,
                  optimizer_hparams : dict[str, Any],
                  exmp_imgs : Any,
@@ -53,6 +54,8 @@ class TrainerModule:
         self.model_name = model_name
         self.model_class = model_class
         self.model_hparams = model_hparams
+        self.batch_size = batch_size
+        self.cur_step = 0
         self.optimizer_name = optimizer_name
         self.optimizer_hparams = optimizer_hparams
         self.seed = seed
@@ -176,22 +179,16 @@ class TrainerModule:
                     train_loader,
                     epoch,
                     rng): # Train model for one epoch, and log avg loss and accuracy
-        metrics = defaultdict(list)
-        for i, batch in enumerate(train_loader):
+        for batch in train_loader:
             rng, train_rng = jax.random.split(rng)
             self.state, total_loss, acc, losses_dict = self.train_step(self.state, tf_to_jax(batch), train_rng)
 
-            metrics["acc"].append(acc)
-            metrics["total_loss"].append(total_loss)
-            for key in losses_dict:
-                metrics[key].append(losses_dict[key])
-
-            if i % 50 == 0:
-                log_dict = {"epoch": epoch}
-                for key in metrics:
-                    avg_val = np.stack(jax.device_get(metrics[key])).mean()
-                    log_dict[f"train/{key}"] = avg_val
-                self.wandb_logger.log(log_dict, step=batch[0].shape[0]*epoch+i)
+            self.cur_step += batch[0].shape[0]
+            if self.cur_step % 50 == 0:
+                log_dict = {"epoch": epoch, "train/acc": acc, "train/total_loss": total_loss}
+                for loss_key, loss_val in losses_dict.items():
+                    log_dict[f"train/{loss_key}"] = loss_val
+                self.wandb_logger.log(log_dict, step=self.cur_step)
 
     def eval_model(self, data_loader):
         # Test model on all images of a data loader and return avg loss
