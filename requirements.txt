@@ -5,3 +5,5 @@ torchvision
 matplotlib
 tdqm
 tensorflow_datasets
+coolname
+wandb

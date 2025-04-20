@@ -23,7 +23,7 @@ def get_transforms(train=True):
                                          p=0.5),
                       A.Normalize(mean=CIFAR10_MEANS, std=CIFAR10_STD)])
 
-def get_base_dataloaders(batch_size=128, num_workers=2):
+def get_base_dataloaders(batch_size=128):
     train_ds = tfds.load('cifar10', split='train[:90%]', as_supervised=True)
     val_ds = tfds.load('cifar10', split='train[90%:]', as_supervised=True)
     test_ds = tfds.load('cifar10', split='test', as_supervised=True)

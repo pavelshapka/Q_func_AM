@@ -1,8 +1,11 @@
 import os
+import wandb
 
 from typing import Any, Optional
 from collections import defaultdict
 from pathlib import Path
+from coolname import generate_slug
+from tqdm import tqdm
 
 import numpy as np
 
@@ -15,9 +18,6 @@ from flax.training import lr_schedule
 
 import optax
 
-from tqdm import tqdm
-
-import wandb
 
 
 CHECKPOINT_PATH = "./checkpoints"
@@ -63,7 +63,7 @@ class TrainerModule:
         self.model = self.model_class(**self.model_hparams)
         # Prepare logging
         self.checkpoint_dir = os.path.abspath(os.path.join(CHECKPOINT_PATH, self.model_name))
-        self.wandb_logger = wandb.init(project="cifar10", name=self.model_name)
+        self.wandb_logger = None
         if not os.path.exists(self.checkpoint_dir):
             os.makedirs(self.checkpoint_dir)
         # Create jitted training and eval functions
@@ -166,29 +166,42 @@ class TrainerModule:
         # Train model for defined number of epochs
         # We first need to create optimizer and the scheduler for the given number of epochs
         self.init_optimizer(num_epochs - start_from, len(train_loader))
+        if self.wandb_logger is None:
+            self.wandb_logger = wandb.init(project="cifar10",
+                                           name=self.model_name + "_" + generate_slug(2),
+                                           resume="allow")
 
         for epoch_idx in tqdm(range(start_from, num_epochs+1), initial=start_from, total=num_epochs):
             rng, train_rng = jax.random.split(rng)
             self.train_epoch(train_loader, epoch=epoch_idx, rng=train_rng)
             if epoch_idx % 5 == 0:
                 eval_acc = self.eval_model(val_loader)
-                self.save_model()
-                self.wandb_logger.log({"val/acc": eval_acc}, step=epoch_idx)
+                self.save_model(epoch=epoch_idx)
+                self.wandb_logger.log({"val/acc": eval_acc, "epoch": epoch_idx})
 
     def train_epoch(self,
                     train_loader,
                     epoch,
                     rng): # Train model for one epoch, and log avg loss and accuracy
+        metrics = defaultdict(list)
         for batch in train_loader:
             rng, train_rng = jax.random.split(rng)
             self.state, total_loss, acc, losses_dict = self.train_step(self.state, tf_to_jax(batch), train_rng)
 
+            metrics["acc"].append(acc)
+            metrics["total_loss"].append(total_loss)
+            for loss_key, loss_val in losses_dict.items():
+                metrics[loss_key].append(loss_val)
+
             self.cur_step += 1
-            if self.cur_step % 20 == 0:
-                log_dict = {"epoch": epoch, "train/acc": acc, "train/total_loss": total_loss}
-                for loss_key, loss_val in losses_dict.items():
-                    log_dict[f"train/{loss_key}"] = loss_val
-                self.wandb_logger.log(log_dict, step=self.cur_step)
+            if self.cur_step % 50 == 0:
+                log_dict = {"epoch": epoch, "step": self.cur_step}
+                for key in metrics:
+                    avg_val = jnp.array(metrics[key]).mean()
+                    log_dict[f"train/{key}"] = avg_val
+                self.wandb_logger.log(log_dict)
+
+                metrics = defaultdict(list)
 
     def eval_model(self, data_loader):
         # Test model on all images of a data loader and return avg loss
@@ -206,7 +219,8 @@ class TrainerModule:
                                     target={"params": self.state.params,
                                             "batch_stats": self.state.batch_stats,
                                             "epoch": epoch,
-                                            "cur_step": self.cur_step},
+                                            "cur_step": self.cur_step,
+                                            "wandb_run_id": self.wandb_logger.id},
                                     step=epoch,
                                     overwrite=True)
 
@@ -217,7 +231,12 @@ class TrainerModule:
                                        batch_stats=state_dict['batch_stats'],
                                        tx=self.state.tx if self.state else optax.sgd(0.1))
         self.cur_step = state_dict.get("cur_step", 0)
-        return state_dict.get("epoch", 0)
+        epoch = state_dict.get("epoch", 0)
+        wandb_run_id = state_dict.get("wandb_run_id", None)
+        if wandb_run_id is not None:
+            self.wandb_logger = wandb.init(project="cifar10", id=wandb_run_id)
+        print(f"Loaded model from epoch {epoch} with step {self.cur_step}")
+        return epoch
 
     def checkpoint_exists(self) -> Optional[int]:
         # Check whether a pretrained model exist for this autoencoder
