@@ -80,7 +80,7 @@ class TrainerModule:
             outs = self.model.apply({"params": params, "batch_stats": batch_stats}, # Run model. During training, we need to update the BatchNorm statistics.
                                     imgs,
                                     train=train,
-                                    rng=train_rng,
+                                    train_rng=train_rng,
                                     mutable=["batch_stats"] if train else False)
             
             aux1_loss, aux2_loss = 0, 0
@@ -157,7 +157,7 @@ class TrainerModule:
     def train_model(self,
                     train_loader,
                     val_loader,
-                    rng,
+                    rng=jax.random.PRNGKey(42),
                     num_epochs=200,
                     start_from=0):
         # Train model for defined number of epochs
@@ -166,17 +166,18 @@ class TrainerModule:
 
         for epoch_idx in tqdm(range(start_from, num_epochs+1), initial=start_from, total=num_epochs):
             rng, train_rng = jax.random.split(rng)
-            self.train_epoch(train_loader, epoch=epoch_idx, train_rng=train_rng)
+            self.train_epoch(train_loader, epoch=epoch_idx, rng=train_rng)
             if epoch_idx % 5 == 0:
                 eval_acc = self.eval_model(val_loader)
-                self.wandb_logger.log({"epoch": epoch_idx, "val/acc": eval_acc}, step=epoch_idx)
+                self.save_model()
+                self.wandb_logger.log({"val/acc": eval_acc}, step=epoch_idx)
 
     def train_epoch(self,
                     train_loader,
                     epoch,
                     rng): # Train model for one epoch, and log avg loss and accuracy
         metrics = defaultdict(list)
-        for i, batch in tqdm(enumerate(train_loader, desc="Training", leave=False)):
+        for i, batch in tqdm(enumerate(train_loader), desc="Training", leave=False):
             rng, train_rng = jax.random.split(rng)
             self.state, total_loss, acc, losses_dict = self.train_step(self.state, tf_to_jax(batch), train_rng)
 
@@ -185,14 +186,12 @@ class TrainerModule:
             for key in losses_dict:
                 metrics[key].append(losses_dict[key])
 
-            if i % 10 == 0:
+            if i % 100 == 0:
                 log_dict = {"epoch": epoch}
                 for key in metrics:
                     avg_val = np.stack(jax.device_get(metrics[key])).mean()
                     log_dict[f"train/{key}"] = avg_val
-                self.wandb_logger.log(log_dict, step=batch.shape[0]*epoch+i)
-        
-        self.wandb_logger.log(log_dict, step=epoch)
+                self.wandb_logger.log(log_dict, step=batch[0].shape[0]*epoch+i)
 
     def eval_model(self, data_loader):
         # Test model on all images of a data loader and return avg loss
@@ -204,13 +203,13 @@ class TrainerModule:
         eval_acc = (correct_class / count).item()
         return eval_acc
 
-    def save_model(self, step=0):
+    def save_model(self, epoch=0):
         """Save current model"""
         checkpoints.save_checkpoint(ckpt_dir=self.checkpoint_dir,
                                     target={"params": self.state.params,
                                             "batch_stats": self.state.batch_stats,
-                                            "step": step},
-                                    step=step,
+                                            "epoch": epoch},
+                                    step=epoch,
                                     overwrite=True)
 
     def load_model(self):
@@ -219,7 +218,7 @@ class TrainerModule:
                                        params=state_dict['params'],
                                        batch_stats=state_dict['batch_stats'],
                                        tx=self.state.tx if self.state else optax.sgd(0.1))
-        return state_dict.get("step", 0)
+        return state_dict.get("epoch", 0)
 
     def checkpoint_exists(self) -> Optional[int]:
         # Check whether a pretrained model exist for this autoencoder

@@ -33,11 +33,11 @@ def get_base_dataloaders(batch_size=128, num_workers=2):
         return augmented["image"], label
 
     def get_dataloader(ds, train=True):
-        ds = ds.map(lambda img, lbl: (tf.cast(img, tf.float32), tf.cast(lbl, tf.float32)),
+        ds = ds.map(lambda img, lbl: (tf.cast(img, tf.float32), lbl),
             num_parallel_calls=tf.data.AUTOTUNE)
         ds = ds.map(lambda img, lbl: tf.py_function(func=apply_augmentation,
                                                 inp=[img, lbl],
-                                                Tout=(tf.float32, tf.float32)),
+                                                Tout=(tf.float32, tf.int64)),
                     num_parallel_calls=tf.data.AUTOTUNE)
         if train:
             ds = ds.shuffle(10_000)
