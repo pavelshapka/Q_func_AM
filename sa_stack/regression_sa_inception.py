@@ -142,7 +142,6 @@ class RegressionSAInceptionNetV1(nn.Module):
                     activation=self.activation)(x, train)
         x = jnp.mean(x, axis=(1, 2))
         x = nn.Dropout(rate=0.4)(x, deterministic=not train, rng=train_rng)
-        print(train_rng)
         x = nn.Dense(features=1,
                      kernel_init=nn.initializers.kaiming_normal(),
                      use_bias=False)(x)

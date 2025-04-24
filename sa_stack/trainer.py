@@ -162,7 +162,7 @@ class TrainerModule:
         for epoch_idx in tqdm(range(start_from, num_epochs+1), initial=start_from, total=num_epochs):
             rng, train_rng = jax.random.split(rng)
             self.train_epoch(train_loader, epoch=epoch_idx, rng=train_rng)
-            if epoch_idx % 5 == 0:
+            if (epoch_idx + 1) % 5 == 0:
                 eval_acc = self.eval_model(val_loader)
                 self.save_model(epoch=epoch_idx)
                 self.wandb_logger.log({"val/acc": eval_acc, "epoch": epoch_idx})
