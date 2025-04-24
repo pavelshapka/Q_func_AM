@@ -38,12 +38,24 @@ def generate_trajectory(image,
 
     transitions = tf.concat([s, a], axis=-1) # [num_steps-1, 2 * 32 * 32]
 
-    indices = tf.range(num_steps - 1)
+    trajectory_reverse = tf.reverse(trajectory, axis=[0])
+
+    sr = trajectory_reverse[:-1]
+    ar = trajectory_reverse[1:] - sr   # Это "шум, который добавили"
+    rewards_r = -reward * (gamma ** tf.reverse(tf.range(num_steps-1, dtype=tf.float32), axis=[0]))
+    rewards_r = tf.reshape(rewards_r, (-1, 1))
+    transitions_r = tf.concat([sr, ar], axis=-1)
+
+    all_transitions = tf.concat([transitions, transitions_r], axis=0)
+    all_rewards = tf.concat([rewards, rewards_r], axis=0)
+
+    n_total = tf.shape(all_transitions)[0]
+    indices = tf.range(n_total)
     shuffled_indices = tf.random.shuffle(indices)
-    transitions = tf.gather(transitions, shuffled_indices)
-    rewards = tf.gather(rewards, shuffled_indices)
+    all_transitions = tf.gather(all_transitions, shuffled_indices)
+    all_rewards = tf.gather(all_rewards, shuffled_indices)
     
-    return transitions, rewards
+    return all_transitions, all_rewards
 
 
 def get_sar_dataloaders(batch_size: int=128,
