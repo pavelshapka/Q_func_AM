@@ -1,9 +1,10 @@
-jax
+jax[cuda12-pip]==0.5.2
 flax
-torch
-torchvision
 matplotlib
 tdqm
+tensorflow
 tensorflow_datasets
 coolname
 wandb
+numpy
+albumentations

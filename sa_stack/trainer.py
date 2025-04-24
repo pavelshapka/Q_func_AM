@@ -86,7 +86,7 @@ class TrainerModule:
                                     train_rng=train_rng,
                                     mutable=["batch_stats"] if train else False)
             
-            output, new_model_state = outs
+            output, new_model_state = outs if train else (outs, None)
             loss = optax.l2_loss(output, labels).mean()
             return loss, new_model_state
         
@@ -179,7 +179,7 @@ class TrainerModule:
             metrics["loss"].append(loss)
 
             self.cur_step += 1
-            if self.cur_step % 50 == 0:
+            if self.cur_step % 20 == 0:
                 log_dict = {"epoch": epoch, "step": self.cur_step}
                 for key in metrics:
                     avg_val = jnp.array(metrics[key]).mean()
