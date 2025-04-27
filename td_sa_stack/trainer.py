@@ -1,7 +1,7 @@
 import os
 import wandb
 
-from typing import Any, Optional
+from typing import Any
 from collections import defaultdict
 from pathlib import Path
 from coolname import generate_slug
@@ -20,7 +20,7 @@ import optax
 
 
 
-CHECKPOINT_PATH = "./checkpoints/forward_only"
+CHECKPOINT_PATH = "./checkpoints/td_sarsa"
 os.makedirs(CHECKPOINT_PATH, exist_ok=True)
 
 class TrainState(train_state.TrainState):
@@ -37,6 +37,11 @@ class TrainerModule:
                  optimizer_name : str,
                  optimizer_hparams : dict[str, Any],
                  exmp_imgs : Any,
+                 update_target_every: int = 100,
+                 gamma: float = 0.95,
+                 ema: float = 0.01,
+                 save_every: int = 5,
+                 eval_every: int = 1,
                  seed=42):
         """
         Module for summarizing all training functionalities for classification on CIFAR10.
@@ -56,11 +61,17 @@ class TrainerModule:
         self.model_hparams = model_hparams
         self.batch_size = batch_size
         self.cur_step = 0
+        self.update_target_every = update_target_every
+        self.gamma = gamma
+        self.ema = ema
         self.optimizer_name = optimizer_name
         self.optimizer_hparams = optimizer_hparams
         self.seed = seed
+        self.save_every = save_every
+        self.eval_every = eval_every
         # Create empty model. Note: no parameters yet
         self.model = self.model_class(**self.model_hparams)
+        self.target_model = self.model_class(**self.model_hparams)
         # Prepare logging
         self.checkpoint_dir = os.path.abspath(os.path.join(CHECKPOINT_PATH, self.model_name))
         self.wandb_logger = None
@@ -76,23 +87,43 @@ class TrainerModule:
     def create_functions(self):
         def calculate_loss(params, # Function to calculate the classification loss for a model
                            batch_stats,
+                           params_target,
+                           batch_stats_target,
                            batch,
                            train: bool,
                            train_rng: jnp.ndarray):
-            imgs, labels = batch
+            sarsa_batch, rewards = batch
+            states_actions = sarsa_batch[:, :, :, :6]
+            next_states_actions = sarsa_batch[:, :, :, 6:]
+
             outs = self.model.apply({"params": params, "batch_stats": batch_stats}, # Run model. During training, we need to update the BatchNorm statistics.
-                                    imgs,
+                                    states_actions,
                                     train=train,
                                     train_rng=train_rng,
                                     mutable=["batch_stats"] if train else False)
             
-            output, new_model_state = outs if train else (outs, None)
-            loss = optax.l2_loss(output, labels).mean()
+            q_values, new_model_state = outs if train else (outs, None)
+
+            outs_target = self.target_model.apply({"params": params_target, "batch_stats": batch_stats_target},
+                                    next_states_actions,
+                                    train=False,
+                                    train_rng=None,
+                                    mutable=False)
+            
+            q_values_target = rewards + self.gamma * outs_target
+
+            loss = optax.l2_loss(q_values, q_values_target).mean()
+
             return loss, new_model_state
         
-        def train_step(state, batch, train_rng): # Training function
+        def train_step(state,
+                       state_target,
+                       batch,
+                       train_rng: jnp.ndarray): # Training function
             loss_fn = lambda params: calculate_loss(params=params,
                                                     batch_stats=state.batch_stats,
+                                                    params_target=state_target.params,
+                                                    batch_stats_target=state_target.batch_stats,
                                                     batch=batch,
                                                     train=True,
                                                     train_rng=train_rng)
@@ -102,9 +133,11 @@ class TrainerModule:
             state = state.apply_gradients(grads=grads, batch_stats=new_model_state["batch_stats"])
             return state, loss
         
-        def eval_step(state, batch): # Eval function. Return the l2 loss for a single batch
+        def eval_step(state, state_target, batch): # Eval function. Return the l2 loss for a single batch
             loss, _ = calculate_loss(state.params,
                                          state.batch_stats,
+                                         state_target.params,
+                                         state_target.batch_stats,
                                          batch,
                                          train=False,
                                          train_rng=None)
@@ -119,6 +152,10 @@ class TrainerModule:
         variables = self.model.init(init_rng, exmp_imgs, train=True)
         self.init_params, self.init_batch_stats = variables["params"], variables["batch_stats"]
         self.state = None
+
+        variables_target = self.target_model.init(init_rng, exmp_imgs, train=False)
+        self.init_params_target, self.init_batch_stats_target = variables_target["params"], variables_target["batch_stats"]
+        self.state_target = None
 
     def init_optimizer(self, num_epochs, num_steps_per_epoch):
         # Initialize learning rate schedule and optimizer
@@ -162,23 +199,35 @@ class TrainerModule:
         for epoch_idx in tqdm(range(start_from, num_epochs+1), initial=start_from, total=num_epochs):
             rng, train_rng = jax.random.split(rng)
             self.train_epoch(train_loader, epoch=epoch_idx, rng=train_rng)
-            if (epoch_idx + 1) % 5 == 0:
-                eval_acc = self.eval_model(val_loader)
+            if (epoch_idx + 1) % self.eval_every == 0:
+                eval_loss = self.eval_model(val_loader)
+                self.wandb_logger.log({"val/loss": eval_loss, "epoch": epoch_idx})
+            if (epoch_idx + 1) % self.save_every == 0:
                 self.save_model(epoch=epoch_idx)
-                self.wandb_logger.log({"val/acc": eval_acc, "epoch": epoch_idx})
+                
+
+    def update_target_model(self, params, params_target, type: str="soft"):
+        if type == "soft":
+            return jax.tree_util.tree_map(lambda target, current: (1 - self.ema) * target + self.ema * current, params_target, params)
+        elif type == "hard":
+            return params
+        assert False, f"Unknown target model update type: {type}"
 
     def train_epoch(self,
                     train_loader,
-                    epoch,
-                    rng): # Train model for one epoch, and log avg loss and accuracy
+                    epoch: int,
+                    rng: jnp.ndarray): # Train model for one epoch, and log avg loss and accuracy
         metrics = defaultdict(list)
         for batch in train_loader:
             rng, train_rng = jax.random.split(rng)
-            self.state, loss = self.train_step(self.state, tf_to_jax(batch), train_rng)
+            self.state, loss = self.train_step(self.state, self.state_target, tf_to_jax(batch), train_rng)
 
             metrics["loss"].append(loss)
 
             self.cur_step += 1
+            if self.cur_step % self.update_target_every == 0:
+                self.state_target = self.state_target.replace(params=self.update_target_model(self.state.params, self.state_target.params),
+                                                              batch_stats=self.update_target_model(self.state.batch_stats, self.state_target.batch_stats))
             if self.cur_step % 20 == 0:
                 log_dict = {"epoch": epoch, "step": self.cur_step}
                 for key in metrics:
@@ -223,12 +272,12 @@ class TrainerModule:
         print(f"Loaded model from epoch {epoch} with step {self.cur_step}")
         return epoch
 
-    def checkpoint_exists(self) -> Optional[int]:
+    def checkpoint_exists(self) -> bool:
         # Check whether a pretrained model exist for this autoencoder
         return any(item.is_dir() for item in Path(self.checkpoint_dir).iterdir())
     
 
 def tf_to_jax(batch):
     """Конвертирует TF-батч в JAX-совместимый формат."""
-    images, labels = batch[0]._numpy(), batch[1]._numpy()
-    return jax.device_put(images), jax.device_put(labels)
+    sarsa_batch, rewards = batch[0]._numpy(), batch[1]._numpy()
+    return jax.device_put(sarsa_batch), jax.device_put(rewards)
