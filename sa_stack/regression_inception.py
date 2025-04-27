@@ -93,7 +93,7 @@ class InceptionBlock(nn.Module):
         return x
 
 
-class RegressionSAInceptionNetV1(nn.Module):
+class RegressionInceptionNetV1(nn.Module):
     activation: Callable = nn.relu
 
     @nn.compact
