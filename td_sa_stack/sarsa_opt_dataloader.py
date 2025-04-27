@@ -53,7 +53,7 @@ def generate_sarsa_opt_trajectory(image,
     return transitions, rewards
 
 
-def get_sar_dataloaders(batch_size: int=128,
+def get_sarsa_opt_dataloaders(batch_size: int=128,
                         reward: float=1.,
                         gamma: float=0.99,
                         min_num_steps: int=3,

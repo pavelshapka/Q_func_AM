@@ -40,8 +40,9 @@ class TrainerModule:
                  update_target_every: int = 100,
                  gamma: float = 0.95,
                  ema: float = 0.01,
-                 save_every: int = 5,
-                 eval_every: int = 1,
+                 save_every_epoch: int = 5,
+                 eval_every_epoch: int = 1,
+                 log_every_step: int = 20,
                  seed=42):
         """
         Module for summarizing all training functionalities for classification on CIFAR10.
@@ -67,8 +68,9 @@ class TrainerModule:
         self.optimizer_name = optimizer_name
         self.optimizer_hparams = optimizer_hparams
         self.seed = seed
-        self.save_every = save_every
-        self.eval_every = eval_every
+        self.save_every_epoch = save_every_epoch
+        self.eval_every_epoch = eval_every_epoch
+        self.log_every_step = log_every_step
         # Create empty model. Note: no parameters yet
         self.model = self.model_class(**self.model_hparams)
         self.target_model = self.model_class(**self.model_hparams)
@@ -199,10 +201,10 @@ class TrainerModule:
         for epoch_idx in tqdm(range(start_from, num_epochs+1), initial=start_from, total=num_epochs):
             rng, train_rng = jax.random.split(rng)
             self.train_epoch(train_loader, epoch=epoch_idx, rng=train_rng)
-            if (epoch_idx + 1) % self.eval_every == 0:
+            if (epoch_idx + 1) % self.eval_every_epoch == 0:
                 eval_loss = self.eval_model(val_loader)
                 self.wandb_logger.log({"val/loss": eval_loss, "epoch": epoch_idx})
-            if (epoch_idx + 1) % self.save_every == 0:
+            if (epoch_idx + 1) % self.save_every_epoch == 0:
                 self.save_model(epoch=epoch_idx)
                 
 
@@ -228,7 +230,7 @@ class TrainerModule:
             if self.cur_step % self.update_target_every == 0:
                 self.state_target = self.state_target.replace(params=self.update_target_model(self.state.params, self.state_target.params),
                                                               batch_stats=self.update_target_model(self.state.batch_stats, self.state_target.batch_stats))
-            if self.cur_step % 20 == 0:
+            if self.cur_step % self.log_every_step == 0:
                 log_dict = {"epoch": epoch, "step": self.cur_step}
                 for key in metrics:
                     avg_val = jnp.array(metrics[key]).mean()

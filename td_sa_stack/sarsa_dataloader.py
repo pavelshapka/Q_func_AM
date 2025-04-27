@@ -34,7 +34,7 @@ def generate_sarsa_trajectory(image,
     s = trajectory[:-1]     # [num_steps-1, 32, 32, 3]
     s_next = trajectory[1:] # [num_steps-1, 32, 32, 3]
     a = s_next - s  # [num_steps-1, 32, 32, 3]
-    a_next = trajectory[2:] - s_next # [num_steps-2, 32, 32, 3]
+    a_next = s_next[1:] - s_next[:-1] # [num_steps-2, 32, 32, 3]
     a_next = tf.concat([a_next, tf.zeros([1, *a_next.shape[1:]], tf.float32)], axis=0) # [num_steps-1, 32, 32, 3]
 
     rewards = reward * (gamma ** tf.range(num_steps-1, -1, -1, dtype=tf.float32)) # [num_steps-1]

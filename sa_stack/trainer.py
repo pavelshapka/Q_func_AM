@@ -37,6 +37,9 @@ class TrainerModule:
                  optimizer_name : str,
                  optimizer_hparams : dict[str, Any],
                  exmp_imgs : Any,
+                 log_every_step: int = 20,
+                 save_every_epoch: int = 5,
+                 eval_every_epoch: int = 1,
                  seed=42):
         """
         Module for summarizing all training functionalities for classification on CIFAR10.
@@ -59,6 +62,9 @@ class TrainerModule:
         self.optimizer_name = optimizer_name
         self.optimizer_hparams = optimizer_hparams
         self.seed = seed
+        self.save_every_epoch = save_every_epoch
+        self.eval_every_epoch = eval_every_epoch
+        self.log_every_step = log_every_step
         # Create empty model. Note: no parameters yet
         self.model = self.model_class(**self.model_hparams)
         # Prepare logging
@@ -162,10 +168,11 @@ class TrainerModule:
         for epoch_idx in tqdm(range(start_from, num_epochs+1), initial=start_from, total=num_epochs):
             rng, train_rng = jax.random.split(rng)
             self.train_epoch(train_loader, epoch=epoch_idx, rng=train_rng)
-            if (epoch_idx + 1) % 5 == 0:
+            if (epoch_idx + 1) % self.eval_every_epoch == 0:
                 eval_acc = self.eval_model(val_loader)
-                self.save_model(epoch=epoch_idx)
                 self.wandb_logger.log({"val/acc": eval_acc, "epoch": epoch_idx})
+            if (epoch_idx + 1) % self.save_every_epoch == 0:
+                self.save_model(epoch=epoch_idx)
 
     def train_epoch(self,
                     train_loader,
@@ -179,7 +186,7 @@ class TrainerModule:
             metrics["loss"].append(loss)
 
             self.cur_step += 1
-            if self.cur_step % 20 == 0:
+            if self.cur_step % self.log_every_step == 0:
                 log_dict = {"epoch": epoch, "step": self.cur_step}
                 for key in metrics:
                     avg_val = jnp.array(metrics[key]).mean()
