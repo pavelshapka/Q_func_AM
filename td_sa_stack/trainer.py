@@ -37,12 +37,13 @@ class TrainerModule:
                  optimizer_name : str,
                  optimizer_hparams : dict[str, Any],
                  exmp_imgs : Any,
-                 update_target_every: int = 100,
+                 update_target_every: int = 40,
                  gamma: float = 0.95,
                  ema: float = 0.01,
                  save_every_epoch: int = 5,
                  eval_every_epoch: int = 1,
                  log_every_step: int = 20,
+                 mode: str = "opt",
                  seed=42):
         """
         Module for summarizing all training functionalities for classification on CIFAR10.
@@ -75,7 +76,7 @@ class TrainerModule:
         self.model = self.model_class(**self.model_hparams)
         self.target_model = self.model_class(**self.model_hparams)
         # Prepare logging
-        self.checkpoint_dir = os.path.abspath(os.path.join(CHECKPOINT_PATH, self.model_name))
+        self.checkpoint_dir = os.path.abspath(os.path.join(CHECKPOINT_PATH, mode, self.model_name))
         self.wandb_logger = None
         if not os.path.exists(self.checkpoint_dir):
             os.makedirs(self.checkpoint_dir)
@@ -98,7 +99,7 @@ class TrainerModule:
             states_actions = sarsa_batch[:, :, :, :6]
             next_states_actions = sarsa_batch[:, :, :, 6:]
 
-            outs = self.model.apply({"params": params, "batch_stats": batch_stats}, # Run model. During training, we need to update the BatchNorm statistics.
+            outs = self.model.apply({"params": params, "batch_stats": batch_stats},
                                     states_actions,
                                     train=train,
                                     train_rng=train_rng,
@@ -107,10 +108,10 @@ class TrainerModule:
             q_values, new_model_state = outs if train else (outs, None)
 
             outs_target = self.target_model.apply({"params": params_target, "batch_stats": batch_stats_target},
-                                    next_states_actions,
-                                    train=False,
-                                    train_rng=None,
-                                    mutable=False)
+                                                  next_states_actions,
+                                                  train=False,
+                                                  train_rng=None,
+                                                  mutable=False)
             
             q_values_target = rewards + self.gamma * outs_target
 
@@ -137,12 +138,12 @@ class TrainerModule:
         
         def eval_step(state, state_target, batch): # Eval function. Return the l2 loss for a single batch
             loss, _ = calculate_loss(state.params,
-                                         state.batch_stats,
-                                         state_target.params,
-                                         state_target.batch_stats,
-                                         batch,
-                                         train=False,
-                                         train_rng=None)
+                                     state.batch_stats,
+                                     state_target.params,
+                                     state_target.batch_stats,
+                                     batch,
+                                     train=False,
+                                     train_rng=None)
             return loss
 
         self.train_step = jax.jit(train_step)
@@ -184,6 +185,11 @@ class TrainerModule:
                                        batch_stats=self.init_batch_stats if self.state is None else self.state.batch_stats,
                                        tx=optimizer)
 
+        self.state_target = TrainState.create(apply_fn=self.target_model.apply,
+                                              params=self.init_params_target if self.state_target is None else self.state_target.params,
+                                              batch_stats=self.init_batch_stats_target if self.state_target is None else self.state_target.batch_stats,
+                                              tx=optax.identity()) # dummy optimizer for target model
+
     def train_model(self,
                     train_loader,
                     val_loader,
@@ -203,9 +209,9 @@ class TrainerModule:
             self.train_epoch(train_loader, epoch=epoch_idx, rng=train_rng)
             if (epoch_idx + 1) % self.eval_every_epoch == 0:
                 eval_loss = self.eval_model(val_loader)
-                self.wandb_logger.log({"val/loss": eval_loss, "epoch": epoch_idx})
+                self.wandb_logger.log({"val/loss": eval_loss, "epoch": epoch_idx + 1})
             if (epoch_idx + 1) % self.save_every_epoch == 0:
-                self.save_model(epoch=epoch_idx)
+                self.save_model(epoch=epoch_idx + 1)
                 
 
     def update_target_model(self, params, params_target, type: str="soft"):
@@ -243,7 +249,7 @@ class TrainerModule:
         # Test model on all images of a data loader and return avg loss
         total_loss, count = 0, 0
         for batch in data_loader:
-            loss = self.eval_step(self.state, tf_to_jax(batch))
+            loss = self.eval_step(self.state, self.state_target, tf_to_jax(batch))
             total_loss += loss * batch[0].shape[0]
             count += batch[0].shape[0]
         eval_loss = (total_loss / count).item()
@@ -256,7 +262,8 @@ class TrainerModule:
                                             "batch_stats": self.state.batch_stats,
                                             "epoch": epoch,
                                             "cur_step": self.cur_step,
-                                            "wandb_run_id": self.wandb_logger.id},
+                                            "wandb_run_id": self.wandb_logger.id,
+                                            "wandb_run_step": wandb.run.step},
                                     step=epoch,
                                     overwrite=True)
 
@@ -269,8 +276,10 @@ class TrainerModule:
         self.cur_step = state_dict.get("cur_step", 0)
         epoch = state_dict.get("epoch", 0)
         wandb_run_id = state_dict.get("wandb_run_id", None)
+        wandb_run_step = state_dict.get("wandb_run_step", 0)
         if wandb_run_id is not None:
             self.wandb_logger = wandb.init(project="cifar10", id=wandb_run_id)
+        wandb.run.step = wandb_run_step
         print(f"Loaded model from epoch {epoch} with step {self.cur_step}")
         return epoch
 

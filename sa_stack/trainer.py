@@ -20,7 +20,7 @@ import optax
 
 
 
-CHECKPOINT_PATH = "./checkpoints/forward_only"
+CHECKPOINT_PATH = "./checkpoints/sa_stack"
 os.makedirs(CHECKPOINT_PATH, exist_ok=True)
 
 class TrainState(train_state.TrainState):
@@ -40,6 +40,7 @@ class TrainerModule:
                  log_every_step: int = 20,
                  save_every_epoch: int = 5,
                  eval_every_epoch: int = 1,
+                 mode: str = "forward_only",
                  seed=42):
         """
         Module for summarizing all training functionalities for classification on CIFAR10.
@@ -68,7 +69,7 @@ class TrainerModule:
         # Create empty model. Note: no parameters yet
         self.model = self.model_class(**self.model_hparams)
         # Prepare logging
-        self.checkpoint_dir = os.path.abspath(os.path.join(CHECKPOINT_PATH, self.model_name))
+        self.checkpoint_dir = os.path.abspath(os.path.join(CHECKPOINT_PATH, mode, self.model_name))
         self.wandb_logger = None
         if not os.path.exists(self.checkpoint_dir):
             os.makedirs(self.checkpoint_dir)
@@ -85,15 +86,15 @@ class TrainerModule:
                            batch,
                            train: bool,
                            train_rng: jnp.ndarray):
-            imgs, labels = batch
-            outs = self.model.apply({"params": params, "batch_stats": batch_stats}, # Run model. During training, we need to update the BatchNorm statistics.
-                                    imgs,
+            states_actions, rewards = batch
+            outs = self.model.apply({"params": params, "batch_stats": batch_stats},
+                                    states_actions,
                                     train=train,
                                     train_rng=train_rng,
                                     mutable=["batch_stats"] if train else False)
             
             output, new_model_state = outs if train else (outs, None)
-            loss = optax.l2_loss(output, labels).mean()
+            loss = optax.l2_loss(output, rewards).mean()
             return loss, new_model_state
         
         def train_step(state, batch, train_rng): # Training function
@@ -110,10 +111,10 @@ class TrainerModule:
         
         def eval_step(state, batch): # Eval function. Return the l2 loss for a single batch
             loss, _ = calculate_loss(state.params,
-                                         state.batch_stats,
-                                         batch,
-                                         train=False,
-                                         train_rng=None)
+                                     state.batch_stats,
+                                     batch,
+                                     train=False,
+                                     train_rng=None)
             return loss
 
         self.train_step = jax.jit(train_step)
@@ -169,15 +170,15 @@ class TrainerModule:
             rng, train_rng = jax.random.split(rng)
             self.train_epoch(train_loader, epoch=epoch_idx, rng=train_rng)
             if (epoch_idx + 1) % self.eval_every_epoch == 0:
-                eval_acc = self.eval_model(val_loader)
-                self.wandb_logger.log({"val/acc": eval_acc, "epoch": epoch_idx})
+                eval_loss = self.eval_model(val_loader)
+                self.wandb_logger.log({"val/loss": eval_loss, "epoch": epoch_idx + 1}, step=self.cur_step)
             if (epoch_idx + 1) % self.save_every_epoch == 0:
-                self.save_model(epoch=epoch_idx)
+                self.save_model(epoch=epoch_idx + 1)
 
     def train_epoch(self,
                     train_loader,
                     epoch,
-                    rng): # Train model for one epoch, and log avg loss and accuracy
+                    rng: jnp.ndarray): # Train model for one epoch, and log avg loss and accuracy
         metrics = defaultdict(list)
         for batch in train_loader:
             rng, train_rng = jax.random.split(rng)
@@ -191,7 +192,7 @@ class TrainerModule:
                 for key in metrics:
                     avg_val = jnp.array(metrics[key]).mean()
                     log_dict[f"train/{key}"] = avg_val
-                self.wandb_logger.log(log_dict)
+                self.wandb_logger.log(log_dict, step=self.cur_step)
 
                 metrics = defaultdict(list)
 
@@ -214,23 +215,24 @@ class TrainerModule:
                                             "cur_step": self.cur_step,
                                             "wandb_run_id": self.wandb_logger.id},
                                     step=epoch,
-                                    overwrite=True)
+                                    overwrite=False)
 
     def load_model(self):
         state_dict = checkpoints.restore_checkpoint(ckpt_dir=self.checkpoint_dir, target=None)
         self.state = TrainState.create(apply_fn=self.model.apply,
                                        params=state_dict['params'],
                                        batch_stats=state_dict['batch_stats'],
-                                       tx=self.state.tx if self.state else optax.sgd(0.1))
+                                       tx=self.state.tx)
         self.cur_step = state_dict.get("cur_step", 0)
         epoch = state_dict.get("epoch", 0)
+
         wandb_run_id = state_dict.get("wandb_run_id", None)
         if wandb_run_id is not None:
             self.wandb_logger = wandb.init(project="cifar10", id=wandb_run_id)
         print(f"Loaded model from epoch {epoch} with step {self.cur_step}")
         return epoch
 
-    def checkpoint_exists(self) -> Optional[int]:
+    def checkpoint_exists(self) -> bool:
         # Check whether a pretrained model exist for this autoencoder
         return any(item.is_dir() for item in Path(self.checkpoint_dir).iterdir())
     

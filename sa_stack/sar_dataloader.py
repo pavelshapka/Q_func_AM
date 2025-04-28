@@ -20,7 +20,8 @@ def generate_trajectory(image,
                         gamma: float,
                         min_num_steps: int,
                         max_num_steps: int,
-                        with_reversed_transitions: bool):
+                        with_reversed_transitions: bool,
+                        with_shuffled_transitions: bool):
     """Generate a SARS trajectory from a noise to an image"""
 
     num_steps = tf.random.uniform((), minval=min_num_steps, maxval=max_num_steps, dtype=tf.int32)
@@ -54,11 +55,12 @@ def generate_trajectory(image,
         all_transitions = transitions
         all_rewards = rewards
 
-    n_total = tf.shape(all_transitions)[0]
-    indices = tf.range(n_total)
-    shuffled_indices = tf.random.shuffle(indices)
-    all_transitions = tf.gather(all_transitions, shuffled_indices)
-    all_rewards = tf.gather(all_rewards, shuffled_indices)
+    if with_shuffled_transitions:
+        n_total = tf.shape(all_transitions)[0]
+        indices = tf.range(n_total)
+        shuffled_indices = tf.random.shuffle(indices)
+        all_transitions = tf.gather(all_transitions, shuffled_indices)
+        all_rewards = tf.gather(all_rewards, shuffled_indices)
     
     return all_transitions, all_rewards
 
@@ -68,7 +70,8 @@ def get_sar_dataloaders(batch_size: int=128,
                         gamma: float=0.99,
                         min_num_steps: int=3,
                         max_num_steps: int=10,
-                        with_reversed_transitions: bool=False):
+                        with_reversed_transitions: bool=False,
+                        with_shuffled_transitions: bool=True):
     train_ds = tfds.load('cifar10', split="train", as_supervised=True)
     test_ds = tfds.load('cifar10', split="test", as_supervised=True)
 
@@ -79,7 +82,8 @@ def get_sar_dataloaders(batch_size: int=128,
                                                          gamma=gamma,
                                                          min_num_steps=min_num_steps,
                                                          max_num_steps=max_num_steps,
-                                                         with_reversed_transitions=with_reversed_transitions),
+                                                         with_reversed_transitions=with_reversed_transitions,
+                                                         with_shuffled_transitions=with_shuffled_transitions),
                     num_parallel_calls=tf.data.AUTOTUNE)
         ds = ds.flat_map(lambda transitions, rewards: tf.data.Dataset.from_tensor_slices((transitions, rewards)))
 
