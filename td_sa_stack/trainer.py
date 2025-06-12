@@ -64,7 +64,7 @@ class TrainerModule:
         self.ema = config.train.ema
 
         self.create_functions(config)    # Create jitted training and eval functions
-        self.init_model(config.model.optimizer, config.model.optimizer_hparams) # Initialize model
+        self.init_model(config.model.optimizer, {"lr": config.train.lr, "weight_decay": config.model.optimizer_weight_decay}) # Initialize model
 
         # Prepare logging
         self.checkpoint_dir = os.path.abspath(os.path.join(CHECKPOINT_PATH, f"{self.model_name}_{str(version)}"))
@@ -186,7 +186,7 @@ class TrainerModule:
 
     def train_model(self,
                     train_ds,
-                    rng_key: jax.Array | None):
+                    rng_key: jax.Array | None = None):
         rng_key = rng_key or jax.random.PRNGKey(self.seed)
         metrics = defaultdict(list)
 

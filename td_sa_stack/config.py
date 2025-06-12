@@ -19,8 +19,7 @@ def get_config():
     model.name = 'RegressionInceptionNetV1'
     model.activation = "swish"
     model.optimizer = "adamw"
-    model.optimizer_hparams = {"lr": 1e-4,
-                               "weight_decay": 1e-5}
+    model.optimizer_weight_decay = 1e-5
 
     # training
     config.train = train = ml_collections.ConfigDict()
