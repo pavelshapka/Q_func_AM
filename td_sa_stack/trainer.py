@@ -13,7 +13,7 @@ from flax.training import train_state
 from flax.training import checkpoints
 
 import math
-import dataset
+from . import dataset
 
 import optax
 
@@ -55,12 +55,10 @@ class TrainerModule:
         self.target_model = self.model_class(**model_hparams)
 
         self.n_steps = config.train.n_steps
-        self.batch_size = config.batch_size
+        self.batch_size = config.train.batch_size
         self.update_target_every = config.train.update_target_every
         self.log_every = config.train.log_every
         self.save_every = config.train.save_every
-        self.eval_every = config.train.eval_every
-
 
         self.gamma = config.data.gamma
         self.ema = config.train.ema

@@ -1,10 +1,11 @@
-jax[cuda12-pip]==0.5.2
-flax
+jax[cuda12-pip]==0.5.0
+flax==0.10.3
 matplotlib
 tdqm
 tensorflow
 tensorflow_datasets
 coolname
 wandb
-numpy
+ml_collections
+absl-py
 albumentations

@@ -12,6 +12,7 @@ def get_config():
     data.max_traj_len = 100
     data.gamma = 0.99
     data.reward_final = 10
+    data.random_flip = True
 
     # model
     config.model = model = ml_collections.ConfigDict()
