@@ -118,9 +118,10 @@ class TrainerModule:
         def train_step_pmap(state: TrainState,
                            state_target: TrainState,
                            batch: tuple[jnp.ndarray, jnp.ndarray],
-                           rng_key: jax.Array):
+                           rng_key: jax.Array,
+                           update_batch_stats: bool = False):
             
-            state = sync_batch_stats(state)
+            state = jax.lax.cond(update_batch_stats, sync_batch_stats, lambda x: x, state)
             
             loss_fn = lambda params: calculate_loss(variables={"params": params, "batch_stats":state.batch_stats},
                                                     variables_target={"params": state_target.params, "batch_stats": state_target.batch_stats},
@@ -199,10 +200,12 @@ class TrainerModule:
             train_rng_keys = jax.random.split(train_rng_key, self.num_devices)
             
             batch = jax.tree.map(lambda x: scaler(x.numpy()), next(train_iter))
+            update_batch_stats = jnp.array([step % self.update_target_every == 0] * self.num_devices)
             self.state, loss = self.train_step_pmap(state=self.state,
                                                     state_target=self.state_target,
                                                     batch=batch,
-                                                    rng_key=train_rng_keys)
+                                                    rng_key=train_rng_keys,
+                                                    update_batch_stats=update_batch_stats)
 
             loss = loss[0]
             
