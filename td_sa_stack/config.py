@@ -6,6 +6,7 @@ def get_config():
 
     config.seed = 0
     config.wandb_track = True
+    config.multi_device = False
 
     # data
     config.data = data = ml_collections.ConfigDict()
@@ -26,10 +27,10 @@ def get_config():
     config.train = train = ml_collections.ConfigDict()
     train.n_steps = 500_000
     train.lr = 1e-4
-    train.batch_size = 256
+    train.batch_size = 128
     train.ema = 0.99
 
-    train.update_target_every = 10
+    train.update_target_every = 30
     train.log_every = 50
     train.save_every = 10_000
 

@@ -38,7 +38,7 @@ def get_dataset(config,
     shuffle_buffer_size = 10000
     prefetch_size = tf.data.experimental.AUTOTUNE
     num_epochs = None if not evaluation else 1
-    batch_dims = [num_devices, per_device_batch_size]
+    batch_dims = [num_devices, per_device_batch_size] if config.multi_device else [batch_size]
     
     print(f"Batch dimensions: {batch_dims}")
 
