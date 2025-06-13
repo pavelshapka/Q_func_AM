@@ -4,4 +4,5 @@ from .regression_inception import RegressionInceptionNetV1
 
 __all__ = ["get_dataset",
            "TrainerModule",
+           "MultiProcessTrainerModule",
            "RegressionInceptionNetV1"]

@@ -11,6 +11,8 @@ from jax import numpy as jnp
 from flax import linen as nn
 from flax.training import train_state
 from flax.training import checkpoints
+from flax.core import freeze, unfreeze
+import time
 
 import math
 from . import dataset
@@ -45,6 +47,8 @@ class TrainerModule:
         """
         super().__init__()
         self.seed = config.seed
+        self.wandb_track = config.wandb_track
+        self.num_devices = jax.local_device_count()
 
         self.model_name = config.model.name
         self.model_class = model_class
@@ -73,8 +77,10 @@ class TrainerModule:
 
         if self.checkpoint_exists():
             self.load_model()
-        else:
-            self.initial_step = 0
+            return
+        
+        self.initial_step = 0
+        if self.wandb_track:
             self.wandb_logger = wandb.init(project="cifar10",
                                            name=self.model_name + "_" + generate_slug(2),
                                            resume="allow")
@@ -109,62 +115,60 @@ class TrainerModule:
             loss = optax.l2_loss(q_values, q_values_target).mean()
             return loss, new_model_state
         
-        def generate_sarsa_trajectory(img: jnp.ndarray,
-                                      rng: jax.Array):
-            """Generate a SARS trajectory from a noise to an image"""
-
-            num_steps_key, z_key, shuffle_key = jax.random.split(rng, 3)
-            num_steps = jax.random.uniform(num_steps_key,
-                                           (),
-                                           minval=config.data.min_traj_len,
-                                           maxval=config.data.max_traj_len,
-                                           dtype=int)
-            z = jax.random.normal(z_key, img.shape, dtype=img.dtype)
-            ts = math.sqrt(2) * jnp.arange(num_steps, dtype=float) % 1.0 # Имитация равномерного распределения
-            ts = jnp.sort(ts).reshape((num_steps, 1, 1, 1))
-
-            traj = z * (1 - ts) + img * ts
-            assert traj.shape == (num_steps, 32, 32, 3)
-
-            s = traj[:-1]                      # [num_steps-1, 32, 32, 3]
-            s_next = traj[1:]                  # [num_steps-1, 32, 32, 3]
-            a = s_next - s                     # [num_steps-1, 32, 32, 3]
-            a_next = img[None, ...] - s_next   # [num_steps-1, 32, 32, 3]
-
-            r, gamma = config.data.reward_final, config.data.gamma
-
-            rewards = (r * (gamma ** jnp.arange(num_steps-1, 0, -1, dtype=float))).reshape((-1, 1))
-
-            transitions = jnp.concat([s, a, s_next, a_next], axis=-1) # [num_steps-1, 32, 32, 3*4=12]
-            assert transitions.shape == (num_steps-1, 32, 32, 12)
-
-            shuffled_idxs = jax.random.permutation(shuffle_key, jnp.arange(num_steps-1))
-            return transitions[shuffled_idxs], rewards[shuffled_idxs]
-        
-        def train_step(state: TrainState,
-                       state_target: TrainState,
-                       batch: tuple[jnp.ndarray, jnp.ndarray],
-                       rng_key: jax.Array):
+        def train_step_pmap(state: TrainState,
+                           state_target: TrainState,
+                           batch: tuple[jnp.ndarray, jnp.ndarray],
+                           rng_key: jax.Array):
             
+            # Sync batch stats across devices
+            state = sync_batch_stats(state)
+            # state_target = sync_batch_stats(state_target)
+            
+            # Calculate loss and gradients
             loss_fn = lambda params: calculate_loss(variables={"params": params, "batch_stats":state.batch_stats},
                                                     variables_target={"params": state_target.params, "batch_stats": state_target.batch_stats},
                                                     batch=batch,
                                                     train=True,
-                                                    train_rng=rng_key)
+                                                    rng_key=rng_key)
 
             (loss, new_model_state), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
+            
+            # Average gradients across devices
+            grads = jax.lax.pmean(grads, axis_name='devices')
+            
+            # Update state
             state = state.apply_gradients(grads=grads, batch_stats=new_model_state["batch_stats"])
+            
+            # Average loss across devices for logging
+            loss = jax.lax.pmean(loss, axis_name='devices')
+            
             return state, loss
 
-        self.train_step = jax.jit(train_step)
-        self.generate_sarsa_trajectory = generate_sarsa_trajectory
+        def sync_batch_stats(state):
+            """Synchronize batch statistics across devices."""
+            if state.batch_stats is not None:
+                batch_stats = jax.lax.pmean(state.batch_stats, axis_name='devices')
+                return state.replace(batch_stats=batch_stats)
+            return state
+
+        self.train_step_pmap = jax.pmap(train_step_pmap, axis_name='devices')
+        self.sync_batch_stats = sync_batch_stats
+
+    def _get_first_device_state(self, state):
+        """Get state from first device, handling both replicated and single states."""
+        return state[0] if hasattr(state, '__getitem__') and len(state) > 0 else state
 
     def init_model(self,
                    opt_name: str,
                    opt_hparams: dict):
         # Initialize model
         init_rng = jax.random.PRNGKey(self.seed)
-        init_batch = jnp.zeros((1, 32, 32, 6), dtype=jnp.float32)
+        # Use per-device batch size for initialization to match pmap expectations
+        per_device_batch_size = self.batch_size // self.num_devices
+        init_batch = jnp.zeros((per_device_batch_size, 32, 32, 6), dtype=jnp.float32)
+        
+        print(f"Initializing model with batch shape: {init_batch.shape}")
+        
         variables = self.model.init(init_rng, init_batch, train=True)
         variables_target = self.target_model.init(init_rng, init_batch, train=False)
 
@@ -173,77 +177,65 @@ class TrainerModule:
         opt_class = opt_classes[opt_name.lower()]
         lr = opt_hparams.pop("lr")
         optimizer = optax.chain(optax.clip(1.0), opt_class(lr, **opt_hparams))
+        
         # Initialize training state
-        self.state = TrainState.create(apply_fn=self.model.apply,
+        state = TrainState.create(apply_fn=self.model.apply,
                                        params=variables["params"],
                                        batch_stats=variables["batch_stats"],
                                        tx=optimizer)
 
-        self.state_target = TrainState.create(apply_fn=self.target_model.apply,
+        state_target = TrainState.create(apply_fn=self.target_model.apply,
                                               params=variables_target["params"],
                                               batch_stats=variables_target["batch_stats"],
                                               tx=optax.identity()) # dummy optimizer for target model
+
+        # Always replicate states across devices (works for single device too)
+        self.state = jax.device_put_replicated(state, jax.local_devices())
+        self.state_target = jax.device_put_replicated(state_target, jax.local_devices())
 
     def train_model(self,
                     train_ds,
                     rng_key: jax.Array | None = None):
         rng_key = rng_key or jax.random.PRNGKey(self.seed)
         metrics = defaultdict(list)
+        batch_time = time.time()
 
         train_iter = iter(train_ds)
         scaler = dataset.get_image_scaler()
-        # inverse_scaler = dataset.get_image_inverse_scaler()
-
-        def generate_batch_trajectories(images: jnp.ndarray, traj_rng_key: jax.Array):
-            """Генерация траекторий для батча изображений"""
-            traj_rng_keys = jax.random.split(traj_rng_key, self.batch_size)
-            transitions_list, rewards_list = jax.vmap(self.generate_sarsa_trajectory)(images, traj_rng_keys)
-            
-            def concatenate_ragged(arrays):
-                lengths = jnp.array([arr.shape[0] for arr in arrays])
-                total_length = jnp.sum(lengths)
-                concatenated = jnp.zeros((total_length, *arrays[0].shape[1:]), dtype=arrays[0].dtype)
-                
-                start_idx = 0
-                for i, arr in enumerate(arrays):
-                    end_idx = start_idx + lengths[i]
-                    concatenated = jax.lax.dynamic_update_slice(concatenated, 
-                                                                arr, 
-                                                                (start_idx, 0, 0, 0))
-                    start_idx = end_idx
-                return concatenated
-            
-            sarsa_batch = concatenate_ragged(transitions_list)
-            rewards_batch = concatenate_ragged(rewards_list)
-            
-            return sarsa_batch, rewards_batch 
 
         for step in range(self.initial_step, self.n_steps):
-            rng_key, traj_rng_key, train_rng_key = jax.random.split(rng_key, num=3)
-           
-            images = jax.tree_map(lambda x: scaler(x._numpy()), next(train_iter))
-            # transitions, rewards = jax.vmap(self.generate_sarsa_trajectory)(images, traj_rng_keys)
-            sarsa_batch, rewards_batch = generate_batch_trajectories(images, traj_rng_key)
+            rng_key, train_rng_key = jax.random.split(rng_key, num=2)
+            train_rng_keys = jax.random.split(train_rng_key, self.num_devices)
 
-            self.state, loss = self.train_step(state=self.state,
-                                               state_target=self.state_target,
-                                               batch=(sarsa_batch, rewards_batch),
-                                               rng_key=train_rng_key)
+            print(f"Step {step}: Training model...")
+            
+            batch = jax.tree.map(lambda x: scaler(x.numpy()), next(train_iter))
+            self.state, loss = self.train_step_pmap(state=self.state,
+                                                    state_target=self.state_target,
+                                                    batch=batch,
+                                                    rng_key=train_rng_keys)
+
+            loss = loss[0]
+            
+            if not self.wandb_track:
+                continue
+
             metrics["loss"].append(loss)
 
-            if step % self.log_every == 0:
-                log_dict = {"step": step}
+            if step % self.log_every == 0 and step != self.initial_step:
+                log_dict = {"step": step, "batch_time": time.time() - batch_time}
                 for key in metrics:
                     avg_val = jnp.array(metrics[key]).mean()
                     log_dict[f"train/{key}"] = avg_val
                 self.wandb_logger.log(log_dict)
 
                 metrics = defaultdict(list)
+                batch_time = time.time()
 
-            if step % self.update_target_every == 0:
-                self.state_target = self.state_target.replace(**self.update_target_model(mode="soft"))
+            if step % self.update_target_every == 0 and step != self.initial_step:
+                self.update_target_model(mode="soft")
 
-            if step % self.save_every == 0:
+            if step % self.save_every == 0 and step != self.initial_step:
                 self.save_model(step=step)        
 
     def update_target_model(self, mode: str="soft"):
@@ -251,35 +243,58 @@ class TrainerModule:
                       "hard": lambda current, target: current}
         update_fn = update_fns[mode]
 
-        params_new = jax.tree_util.tree_map(update_fn, self.state.params, self.state_target.params)
-        batch_stats_new = jax.tree_util.tree_map(update_fn, self.state.batch_stats, self.state_target.batch_stats)
+        # state_target = self._get_first_device_state(self.state_target)
+        # old_value = jax.tree_util.tree_leaves(state_target.params)[0].flatten()[0]
 
-        return {"params": params_new, "batch_stats": batch_stats_new}
+        def update_single_device(state, state_target):
+            params_new = jax.tree_util.tree_map(update_fn, state.params, state_target.params)
+            batch_stats_new = jax.tree_util.tree_map(update_fn, state.batch_stats, state_target.batch_stats)
+            return state_target.replace(params=params_new, batch_stats=batch_stats_new)
+    
+        self.state_target = jax.vmap(update_single_device)(self.state, self.state_target)
+
+        # state_target = self._get_first_device_state(self.state_target)
+        # new_value = jax.tree_util.tree_leaves(state_target.params)[0].flatten()[0]  
+        # print(f"Update check - Old: {old_value:.6f}, New: {new_value:.6f}, Changed: {not jnp.allclose(old_value, new_value)}")
+        
 
     def save_model(self, step: int=0):
         """Save current model"""
+        # Get first device state for saving
+        # Handle both replicated (array) and non-replicated (single) states
+        state_to_save = self._get_first_device_state(self.state)
+        
         checkpoints.save_checkpoint(ckpt_dir=self.checkpoint_dir,
-                                    target={"params": self.state.params,
-                                            "batch_stats": self.state.batch_stats,
+                                    target={"params": state_to_save.params,
+                                            "batch_stats": state_to_save.batch_stats,
                                             "step": step,
-                                            "wandb_run_id": self.wandb_logger.id,
-                                            "wandb_run_step": wandb.run.step},
+                                            "wandb_run_id": self.wandb_logger.id if self.wandb_track else None,
+                                            "wandb_run_step": wandb.run.step if self.wandb_track else 0},
                                     step=step,
                                     overwrite=False)
 
     def load_model(self) -> None:
         state_dict = checkpoints.restore_checkpoint(ckpt_dir=self.checkpoint_dir, target=None)
-        self.state = TrainState.create(apply_fn=self.model.apply,
+        state = TrainState.create(apply_fn=self.model.apply,
                                        params=state_dict["params"],
                                        batch_stats=state_dict["batch_stats"],
                                        tx=self.state.tx)
+        
+        state_target = TrainState.create(apply_fn=self.target_model.apply,
+                                              params=state_dict["params"],
+                                              batch_stats=state_dict["batch_stats"],
+                                              tx=optax.identity()) # dummy optimizer for target model
+        
+        # Always replicate loaded state across devices
+        self.state = jax.device_put_replicated(state, jax.local_devices())
+        self.state_target = jax.device_put_replicated(state_target, jax.local_devices())
+            
         self.initial_step = state_dict.get("step", 0)
         wandb_run_id = state_dict.get("wandb_run_id", None)
-        wandb_run_step = state_dict.get("wandb_run_step", 0)
-        if wandb_run_id is not None:
+        if wandb_run_id is not None and self.wandb_track:
             self.wandb_logger = wandb.init(project="cifar10", id=wandb_run_id)
-            wandb.run.step = wandb_run_step
-        print(f"Loaded model from step {self.initial_step}")
+            # wandb.run.step = wandb_run_step
+        print(f"Loaded model from step {self.initial_step}, wandb_step: {wandb.run.step}")
 
     def checkpoint_exists(self) -> bool:
         # Check whether a pretrained model exist for this autoencoder
