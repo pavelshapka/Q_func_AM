@@ -147,10 +147,9 @@ class TrainerModule:
         self.sync_batch_stats = sync_batch_stats
 
     def _get_first_device_state(self, state):
-        print(f"State type: {type(state)}")
         if self.num_devices == 1:
             return state
-        return jax.tree_map(lambda x: x[0], state)
+        return jax.tree.map(lambda x: x[0], state)
 
     def init_model(self,
                    opt_name: str,
@@ -198,8 +197,6 @@ class TrainerModule:
         for step in range(self.initial_step, self.n_steps):
             rng_key, train_rng_key = jax.random.split(rng_key, num=2)
             train_rng_keys = jax.random.split(train_rng_key, self.num_devices)
-
-            print(f"Step {step}: Training model...")
             
             batch = jax.tree.map(lambda x: scaler(x.numpy()), next(train_iter))
             self.state, loss = self.train_step_pmap(state=self.state,
@@ -226,22 +223,9 @@ class TrainerModule:
 
             if step % self.update_target_every == 0 and step != self.initial_step:
                 self.state_target = self.update_target(mode="soft")
-                # self.update_target_model(mode="soft")
 
             if step % self.save_every == 0 and step != self.initial_step:
                 self.save_model(step=step)        
-
-    # def update_target_model(self, mode: str="soft"):
-    #     update_fns = {"soft": lambda current, target: (1 - self.ema) * current + self.ema * target, # 0.01 * cur + 0.99 * targ
-    #                   "hard": lambda current, target: current}
-    #     update_fn = update_fns[mode]
-
-    #     def update_single_device(state, state_target):
-    #         params_new = jax.tree_util.tree_map(update_fn, state.params, state_target.params)
-    #         batch_stats_new = jax.tree_util.tree_map(update_fn, state.batch_stats, state_target.batch_stats)
-    #         return state_target.replace(params=params_new, batch_stats=batch_stats_new)
-    
-    #     self.state_target = jax.vmap(update_single_device)(self.state, self.state_target)
 
     def update_target(self, mode: str="soft"):
         update_fns = {"soft": lambda current, target: (1 - self.ema) * current + self.ema * target, # 0.01 * cur + 0.99 * targ
@@ -255,10 +239,8 @@ class TrainerModule:
         batch_stats_new = jax.tree_util.tree_map(update_fn, state.batch_stats, state_target.batch_stats)
         
         new_state_target = state_target.replace(params=params_new, batch_stats=batch_stats_new)
-        # Реплицируем обновленные параметры на все устройства
-        return jax.device_put_replicated(new_state_target, jax.local_devices())
 
-    
+        return jax.device_put_replicated(new_state_target, jax.local_devices())
 
     def save_model(self, step: int=0):
         """Save current model"""
