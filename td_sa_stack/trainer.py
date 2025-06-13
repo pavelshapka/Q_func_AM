@@ -120,11 +120,8 @@ class TrainerModule:
                            batch: tuple[jnp.ndarray, jnp.ndarray],
                            rng_key: jax.Array):
             
-            # Sync batch stats across devices
             state = sync_batch_stats(state)
-            # state_target = sync_batch_stats(state_target)
             
-            # Calculate loss and gradients
             loss_fn = lambda params: calculate_loss(variables={"params": params, "batch_stats":state.batch_stats},
                                                     variables_target={"params": state_target.params, "batch_stats": state_target.batch_stats},
                                                     batch=batch,
@@ -133,13 +130,8 @@ class TrainerModule:
 
             (loss, new_model_state), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
             
-            # Average gradients across devices
             grads = jax.lax.pmean(grads, axis_name='devices')
-            
-            # Update state
             state = state.apply_gradients(grads=grads, batch_stats=new_model_state["batch_stats"])
-            
-            # Average loss across devices for logging
             loss = jax.lax.pmean(loss, axis_name='devices')
             
             return state, loss
@@ -155,15 +147,16 @@ class TrainerModule:
         self.sync_batch_stats = sync_batch_stats
 
     def _get_first_device_state(self, state):
-        """Get state from first device, handling both replicated and single states."""
-        return state[0] if hasattr(state, '__getitem__') and len(state) > 0 else state
+        print(f"State type: {type(state)}")
+        if self.num_devices == 1:
+            return state
+        return jax.tree_map(lambda x: x[0], state)
 
     def init_model(self,
                    opt_name: str,
                    opt_hparams: dict):
-        # Initialize model
         init_rng = jax.random.PRNGKey(self.seed)
-        # Use per-device batch size for initialization to match pmap expectations
+
         per_device_batch_size = self.batch_size // self.num_devices
         init_batch = jnp.zeros((per_device_batch_size, 32, 32, 6), dtype=jnp.float32)
         
@@ -189,7 +182,6 @@ class TrainerModule:
                                               batch_stats=variables_target["batch_stats"],
                                               tx=optax.identity()) # dummy optimizer for target model
 
-        # Always replicate states across devices (works for single device too)
         self.state = jax.device_put_replicated(state, jax.local_devices())
         self.state_target = jax.device_put_replicated(state_target, jax.local_devices())
 
@@ -233,35 +225,43 @@ class TrainerModule:
                 batch_time = time.time()
 
             if step % self.update_target_every == 0 and step != self.initial_step:
-                self.update_target_model(mode="soft")
+                self.state_target = self.update_target(mode="soft")
+                # self.update_target_model(mode="soft")
 
             if step % self.save_every == 0 and step != self.initial_step:
                 self.save_model(step=step)        
 
-    def update_target_model(self, mode: str="soft"):
+    # def update_target_model(self, mode: str="soft"):
+    #     update_fns = {"soft": lambda current, target: (1 - self.ema) * current + self.ema * target, # 0.01 * cur + 0.99 * targ
+    #                   "hard": lambda current, target: current}
+    #     update_fn = update_fns[mode]
+
+    #     def update_single_device(state, state_target):
+    #         params_new = jax.tree_util.tree_map(update_fn, state.params, state_target.params)
+    #         batch_stats_new = jax.tree_util.tree_map(update_fn, state.batch_stats, state_target.batch_stats)
+    #         return state_target.replace(params=params_new, batch_stats=batch_stats_new)
+    
+    #     self.state_target = jax.vmap(update_single_device)(self.state, self.state_target)
+
+    def update_target(self, mode: str="soft"):
         update_fns = {"soft": lambda current, target: (1 - self.ema) * current + self.ema * target, # 0.01 * cur + 0.99 * targ
                       "hard": lambda current, target: current}
         update_fn = update_fns[mode]
 
-        # state_target = self._get_first_device_state(self.state_target)
-        # old_value = jax.tree_util.tree_leaves(state_target.params)[0].flatten()[0]
-
-        def update_single_device(state, state_target):
-            params_new = jax.tree_util.tree_map(update_fn, state.params, state_target.params)
-            batch_stats_new = jax.tree_util.tree_map(update_fn, state.batch_stats, state_target.batch_stats)
-            return state_target.replace(params=params_new, batch_stats=batch_stats_new)
-    
-        self.state_target = jax.vmap(update_single_device)(self.state, self.state_target)
-
-        # state_target = self._get_first_device_state(self.state_target)
-        # new_value = jax.tree_util.tree_leaves(state_target.params)[0].flatten()[0]  
-        # print(f"Update check - Old: {old_value:.6f}, New: {new_value:.6f}, Changed: {not jnp.allclose(old_value, new_value)}")
+        state = self._get_first_device_state(self.state)
+        state_target = self._get_first_device_state(self.state_target)
         
+        params_new = jax.tree_util.tree_map(update_fn, state.params, state_target.params)
+        batch_stats_new = jax.tree_util.tree_map(update_fn, state.batch_stats, state_target.batch_stats)
+        
+        new_state_target = state_target.replace(params=params_new, batch_stats=batch_stats_new)
+        # Реплицируем обновленные параметры на все устройства
+        return jax.device_put_replicated(new_state_target, jax.local_devices())
+
+    
 
     def save_model(self, step: int=0):
         """Save current model"""
-        # Get first device state for saving
-        # Handle both replicated (array) and non-replicated (single) states
         state_to_save = self._get_first_device_state(self.state)
         
         checkpoints.save_checkpoint(ckpt_dir=self.checkpoint_dir,
@@ -285,7 +285,6 @@ class TrainerModule:
                                               batch_stats=state_dict["batch_stats"],
                                               tx=optax.identity()) # dummy optimizer for target model
         
-        # Always replicate loaded state across devices
         self.state = jax.device_put_replicated(state, jax.local_devices())
         self.state_target = jax.device_put_replicated(state_target, jax.local_devices())
             
@@ -293,9 +292,8 @@ class TrainerModule:
         wandb_run_id = state_dict.get("wandb_run_id", None)
         if wandb_run_id is not None and self.wandb_track:
             self.wandb_logger = wandb.init(project="cifar10", id=wandb_run_id)
-            # wandb.run.step = wandb_run_step
+
         print(f"Loaded model from step {self.initial_step}, wandb_step: {wandb.run.step}")
 
     def checkpoint_exists(self) -> bool:
-        # Check whether a pretrained model exist for this autoencoder
         return any(item.is_dir() for item in Path(self.checkpoint_dir).iterdir())
