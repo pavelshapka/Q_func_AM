@@ -29,7 +29,7 @@ def get_config():
     config.train = train = ml_collections.ConfigDict()
     train.n_steps = 500_000
     train.lr = 1e-4
-    train.batch_size = 1024 # 512 for each device
+    train.batch_size = 128 # 512 for each device
     train.ema = 0.995
 
     train.update_target_every = 50

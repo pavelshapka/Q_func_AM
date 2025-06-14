@@ -82,19 +82,19 @@ def get_dataset(config,
         transitions = tf.concat([s, a, s_next, a_next], axis=-1) # [num_steps-1, 32, 32, 3*4=12]
 
         if with_reversed_actions:
-            s = trajectory[1:]
-            s_next = trajectory[:-1]
-            a = s_next - s
-            a_next = image[None, ...] - s_next
-            transitions_reversed = tf.concat([s, a, s_next, a_next], axis=-1)
+            s_rev = trajectory[1:]
+            s_next_rev = trajectory[:-1]
+            a_rev = s_next_rev - s_rev
+            a_next_rev = image[None, ...] - s_next_rev
+            transitions_reversed = tf.concat([s_rev, a_rev, s_next_rev, a_next_rev], axis=-1)
 
             rewards_reversed = -reward * (gamma ** tf.range(0, num_steps-1, 1, dtype=tf.float32)) # [num_steps-1]
             rewards = tf.concat([rewards, rewards_reversed], axis=0)
-            transitions = tf.concat([transitions, transitions_reversed], axis=-1)
+            transitions = tf.concat([transitions, transitions_reversed], axis=0)
 
 
         rewards = tf.reshape(rewards, (-1, 1))
-        return transitions, rewards, transitions_reversed, rewards_reversed
+        return transitions, rewards
     
     def create_dataset(dataset_builder, split):
         dataset_options = tf.data.Options()
