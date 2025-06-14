@@ -5,7 +5,7 @@ def get_config():
     config = ml_collections.ConfigDict()
 
     config.seed = 0
-    config.wandb_track = True
+    config.wandb_track = False
     config.multi_device = True
 
     # data
@@ -16,6 +16,7 @@ def get_config():
     data.gamma = 0.97
     data.reward_final = 10
     data.random_flip = True
+    data.with_reversed_actions = True
 
     # model
     config.model = model = ml_collections.ConfigDict()

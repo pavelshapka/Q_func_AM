@@ -59,14 +59,15 @@ def get_dataset(config,
                                       reward: float,
                                       gamma: float,
                                       min_num_steps: int,
-                                      max_num_steps: int):
+                                      max_num_steps: int,
+                                      with_reversed_actions: bool = False):
         """Generate a SARS trajectory from a noise to an image"""
 
         num_steps = tf.random.uniform((), minval=min_num_steps, maxval=max_num_steps, dtype=tf.int32)
         z = tf.random.normal(tf.shape(image), dtype=image.dtype)
 
         ts = math.sqrt(2) * tf.range(num_steps, dtype=tf.float32) % 1.0 # Имитация равномерного распределения
-        ts = tf.sort(ts, direction='ASCENDING') 
+        ts = tf.sort(ts, direction='ASCENDING')
         ts = tf.reshape(ts, (num_steps, 1, 1, 1))
 
         trajectory = z * (1 - ts) + image * ts # [None, 32, 32, 3] * [num_steps, None, None, None]
@@ -77,11 +78,23 @@ def get_dataset(config,
         a_next = image[None, ...] - s_next # [num_steps-1, 32, 32, 3]
 
         rewards = reward * (gamma ** tf.range(num_steps-1, 0, -1, dtype=tf.float32)) # [num_steps-1]
-        rewards = tf.reshape(rewards, (-1, 1))
 
         transitions = tf.concat([s, a, s_next, a_next], axis=-1) # [num_steps-1, 32, 32, 3*4=12]
-        
-        return transitions, rewards
+
+        if with_reversed_actions:
+            s = trajectory[1:]
+            s_next = trajectory[:-1]
+            a = s_next - s
+            a_next = image[None, ...] - s_next
+            transitions_reversed = tf.concat([s, a, s_next, a_next], axis=-1)
+
+            rewards_reversed = -reward * (gamma ** tf.range(0, num_steps-1, 1, dtype=tf.float32)) # [num_steps-1]
+            rewards = tf.concat([rewards, rewards_reversed], axis=0)
+            transitions = tf.concat([transitions, transitions_reversed], axis=-1)
+
+
+        rewards = tf.reshape(rewards, (-1, 1))
+        return transitions, rewards, transitions_reversed, rewards_reversed
     
     def create_dataset(dataset_builder, split):
         dataset_options = tf.data.Options()
@@ -103,7 +116,8 @@ def get_dataset(config,
                                                                    reward=config.data.reward_final,
                                                                    gamma=config.data.gamma,
                                                                    min_num_steps=config.data.min_traj_len,
-                                                                   max_num_steps=config.data.max_traj_len),
+                                                                   max_num_steps=config.data.max_traj_len,
+                                                                   with_reversed_actions=config.data.with_reversed_actions),
                     num_parallel_calls=tf.data.AUTOTUNE)
         ds = ds.flat_map(lambda transitions, rewards: tf.data.Dataset.from_tensor_slices((transitions, rewards)))
         if not evaluation:

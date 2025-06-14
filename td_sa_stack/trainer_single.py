@@ -258,7 +258,7 @@ class TrainerModuleSingle:
         if wandb_run_id is not None and self.wandb_track:
             self.wandb_logger = wandb.init(project="cifar10", id=wandb_run_id)
 
-        print(f"Loaded model from step {self.initial_step}, wandb_step: {wandb.run.step}")
+        print(f"Loaded model from step {self.initial_step}")
 
     def checkpoint_exists(self) -> bool:
         return any(item.is_dir() for item in Path(self.checkpoint_dir).iterdir())
