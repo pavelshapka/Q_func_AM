@@ -13,7 +13,7 @@ def get_config():
     data.num_threads = 48
     data.min_traj_len = 5
     data.max_traj_len = 25
-    data.gamma = 0.9
+    data.gamma = 0.95
     data.reward_final = 10
     data.random_flip = True
     data.uniform_dequantization = True

@@ -112,6 +112,9 @@ class TrainerModule:
             
             q_values_target = rewards + self.gamma * outs_target
 
+            q_values = jnp.clip(q_values, -10, 30)
+            q_values_target = jnp.clip(q_values_target, -10, 30)
+
             loss = optax.l2_loss(q_values, q_values_target).mean()
             return loss, new_model_state
         
@@ -193,17 +196,16 @@ class TrainerModule:
         batch_time = time.time()
 
         train_iter = iter(train_ds)
-        scaler = dataset.get_image_scaler()
 
         for step in range(self.initial_step, self.n_steps):
             rng_key, train_rng_key = jax.random.split(rng_key, num=2)
             train_rng_keys = jax.random.split(train_rng_key, self.num_devices)
             
-            batch = next(train_iter).numpy()
+            transitions, rewards = next(train_iter)
             update_batch_stats = jnp.array([step % self.update_target_every == 0] * self.num_devices)
             self.state, loss = self.train_step_pmap(state=self.state,
                                                     state_target=self.state_target,
-                                                    batch=batch,
+                                                    batch=(transitions.numpy(), rewards.numpy()),
                                                     rng_key=train_rng_keys,
                                                     update_batch_stats=update_batch_stats)
 
@@ -256,7 +258,8 @@ class TrainerModule:
                                             "wandb_run_id": self.wandb_logger.id if self.wandb_track else None,
                                             "wandb_run_step": wandb.run.step if self.wandb_track else 0},
                                     step=step,
-                                    overwrite=False)
+                                    overwrite=False,
+                                    keep=100)
 
     def load_model(self) -> None:
         state_dict = checkpoints.restore_checkpoint(ckpt_dir=self.checkpoint_dir, target=None)

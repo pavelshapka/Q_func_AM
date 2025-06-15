@@ -91,7 +91,7 @@ def get_dataset(config,
 
         if with_random_actions:
             s_rand = trajectory
-            a_rand = tf.random.normal(tf.shape(trajectory), dtype=image.dtype) / num_steps
+            a_rand = tf.random.normal(tf.shape(trajectory), dtype=image.dtype) / tf.cast(num_steps, dtype=image.dtype)
             s_next_rand = s_rand + a_rand
             a_next_rand = image[None, ...] - s_next_rand
             transitions_random = tf.concat([s_rand, a_rand, s_next_rand, a_next_rand], axis=-1)
