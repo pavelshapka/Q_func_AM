@@ -51,14 +51,14 @@ def get_dataset(config,
         img = (img-0.5)/0.5
         return img, d.get('label', None)
     
-    def generate_sarsa_opt_trajectory(image,
-                                      reward: float,
-                                      gamma: float,
-                                      min_num_steps: int,
-                                      max_num_steps: int,
-                                      with_reversed_actions: bool = False,
-                                      with_random_actions: bool = False):
+    def generate_sarsa_opt_trajectory(image):
         """Generate a SARS trajectory from a noise to an image"""
+
+        reward = config.data.reward_final
+        gamma = config.data.gamma
+        min_num_steps, max_num_steps = config.data.min_traj_len, config.data.max_traj_len
+        with_reversed_actions = config.data.with_reversed_actions
+        with_random_actions = config.data.with_random_actions
 
         num_steps = tf.random.uniform((), minval=min_num_steps, maxval=max_num_steps, dtype=tf.int32)
         z = tf.random.normal(tf.shape(image), dtype=image.dtype)
@@ -69,12 +69,12 @@ def get_dataset(config,
 
         trajectory = z * (1 - ts) + image * ts # [None, 32, 32, 3] * [num_steps, None, None, None]
 
-        s = trajectory[:-1]                # [num_steps-1, 32, 32, 3]
-        s_next = trajectory[1:]            # [num_steps-1, 32, 32, 3]
+        s = trajectory[:-2]                # [num_steps-1, 32, 32, 3] предотвращаем обучение на нулевое действие в качестве оптимального
+        s_next = trajectory[1:len(trajectory)-1]            # [num_steps-1, 32, 32, 3]
         a = s_next - s                     # [num_steps-1, 32, 32, 3]
         a_next = image[None, ...] - s_next # [num_steps-1, 32, 32, 3]
 
-        rewards = reward * (gamma ** tf.range(num_steps-1, 0, -1, dtype=tf.float32)) # [num_steps-1]
+        rewards = reward * (gamma ** tf.range(tf.shape(s)[0], 0, -1, dtype=tf.float32)) # [num_steps-1]
 
         transitions = tf.concat([s, a, s_next, a_next], axis=-1) # [num_steps-1, 32, 32, 3*4=12]
 
@@ -90,13 +90,13 @@ def get_dataset(config,
             transitions = tf.concat([transitions, transitions_reversed], axis=0)
 
         if with_random_actions:
-            s_rand = trajectory
-            a_rand = tf.random.normal(tf.shape(trajectory), dtype=image.dtype) / tf.cast(num_steps, dtype=image.dtype)
+            s_rand = trajectory[:-1]
+            a_rand = tf.random.normal(tf.shape(s_rand), dtype=image.dtype) / tf.cast(num_steps, dtype=image.dtype)
             s_next_rand = s_rand + a_rand
             a_next_rand = image[None, ...] - s_next_rand
             transitions_random = tf.concat([s_rand, a_rand, s_next_rand, a_next_rand], axis=-1)
 
-            rewards_random = tf.zeros(num_steps, dtype=tf.float32) # [num_steps]
+            rewards_random = tf.zeros(tf.shape(s_rand)[0], dtype=tf.float32) # [num_steps]
             rewards = tf.concat([rewards, rewards_random], axis=0)
             transitions = tf.concat([transitions, transitions_random], axis=0)
 
@@ -120,14 +120,7 @@ def get_dataset(config,
 
         ds = ds.repeat(count=num_epochs) # None -> бесконечное количество эпох
         ds = ds.map(preprocess_fn, num_parallel_calls=tf.data.experimental.AUTOTUNE)
-        ds = ds.map(lambda image, _: generate_sarsa_opt_trajectory(image=image,
-                                                                   reward=config.data.reward_final,
-                                                                   gamma=config.data.gamma,
-                                                                   min_num_steps=config.data.min_traj_len,
-                                                                   max_num_steps=config.data.max_traj_len,
-                                                                   with_reversed_actions=config.data.with_reversed_actions,
-                                                                   with_random_actions=config.data.with_random_actions),
-                    num_parallel_calls=tf.data.AUTOTUNE)
+        ds = ds.map(lambda image, _: generate_sarsa_opt_trajectory(image=image), num_parallel_calls=tf.data.AUTOTUNE)
         ds = ds.flat_map(lambda transitions, rewards: tf.data.Dataset.from_tensor_slices((transitions, rewards)))
         if not evaluation:
             ds = ds.shuffle(shuffle_buffer_size) # перемешивание

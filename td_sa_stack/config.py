@@ -13,11 +13,11 @@ def get_config():
     data.num_threads = 48
     data.min_traj_len = 5
     data.max_traj_len = 25
-    data.gamma = 0.95
+    data.gamma = 0.9
     data.reward_final = 10
     data.random_flip = True
     data.uniform_dequantization = True
-    data.with_reversed_actions = True
+    data.with_reversed_actions = False
     data.with_random_actions = True
 
     # model
@@ -32,7 +32,7 @@ def get_config():
     train.n_steps = 500_000
     train.lr = 1e-4
     train.batch_size = 1024 # 512 for each device
-    train.ema = 0.99
+    train.ema = 0.995
 
     train.update_target_every = 20
     train.log_every = 200
