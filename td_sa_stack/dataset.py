@@ -53,6 +53,8 @@ def get_dataset(config,
             img = tf.image.random_flip_left_right(img)
         if uniform_dequantization:
             img = (tf.random.uniform(img.shape, dtype=tf.float32) + img * 255.) / 256.
+
+        img = (img-0.5)/0.5
         return img, d.get('label', None)
     
     def generate_sarsa_opt_trajectory(image,

@@ -199,7 +199,7 @@ class TrainerModule:
             rng_key, train_rng_key = jax.random.split(rng_key, num=2)
             train_rng_keys = jax.random.split(train_rng_key, self.num_devices)
             
-            batch = jax.tree.map(lambda x: scaler(x.numpy()), next(train_iter))
+            batch = next(train_iter).numpy()
             update_batch_stats = jnp.array([step % self.update_target_every == 0] * self.num_devices)
             self.state, loss = self.train_step_pmap(state=self.state,
                                                     state_target=self.state_target,
