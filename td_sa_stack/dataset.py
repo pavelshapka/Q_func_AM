@@ -4,12 +4,6 @@ import math
 import tensorflow as tf
 import tensorflow_datasets as tfds
 
-def get_image_scaler(): # [0, 1] -> [-1, 1]
-    def scaler(x):
-        return (x - 0.5)/0.5
-    return scaler
-
-
 def get_image_inverse_scaler(config): # [-1, 1] -> [0, 1]
     def inv_scaler(x):
         return x*0.5 + 0.5
@@ -62,7 +56,8 @@ def get_dataset(config,
                                       gamma: float,
                                       min_num_steps: int,
                                       max_num_steps: int,
-                                      with_reversed_actions: bool = False):
+                                      with_reversed_actions: bool = False,
+                                      with_random_actions: bool = False):
         """Generate a SARS trajectory from a noise to an image"""
 
         num_steps = tf.random.uniform((), minval=min_num_steps, maxval=max_num_steps, dtype=tf.int32)
@@ -90,9 +85,20 @@ def get_dataset(config,
             a_next_rev = image[None, ...] - s_next_rev
             transitions_reversed = tf.concat([s_rev, a_rev, s_next_rev, a_next_rev], axis=-1)
 
-            rewards_reversed = -reward * (gamma ** tf.range(0, num_steps-1, 1, dtype=tf.float32)) # [num_steps-1]
+            rewards_reversed = -reward * (gamma ** tf.range(num_steps-1, 0, -1, dtype=tf.float32)) # [num_steps-1]
             rewards = tf.concat([rewards, rewards_reversed], axis=0)
             transitions = tf.concat([transitions, transitions_reversed], axis=0)
+
+        if with_random_actions:
+            s_rand = trajectory
+            a_rand = tf.random.normal(tf.shape(trajectory), dtype=image.dtype) / num_steps
+            s_next_rand = s_rand + a_rand
+            a_next_rand = image[None, ...] - s_next_rand
+            transitions_random = tf.concat([s_rand, a_rand, s_next_rand, a_next_rand], axis=-1)
+
+            rewards_random = tf.zeros(num_steps, dtype=tf.float32) # [num_steps]
+            rewards = tf.concat([rewards, rewards_random], axis=0)
+            transitions = tf.concat([transitions, transitions_random], axis=0)
 
 
         rewards = tf.reshape(rewards, (-1, 1))
@@ -119,7 +125,8 @@ def get_dataset(config,
                                                                    gamma=config.data.gamma,
                                                                    min_num_steps=config.data.min_traj_len,
                                                                    max_num_steps=config.data.max_traj_len,
-                                                                   with_reversed_actions=config.data.with_reversed_actions),
+                                                                   with_reversed_actions=config.data.with_reversed_actions,
+                                                                   with_random_actions=config.data.with_random_actions),
                     num_parallel_calls=tf.data.AUTOTUNE)
         ds = ds.flat_map(lambda transitions, rewards: tf.data.Dataset.from_tensor_slices((transitions, rewards)))
         if not evaluation:
