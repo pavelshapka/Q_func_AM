@@ -11,9 +11,9 @@ def get_config():
     # data
     config.data = data = ml_collections.ConfigDict()
     data.num_threads = 48
-    data.min_traj_len = 40
-    data.max_traj_len = 80
-    data.gamma = 0.97
+    data.min_traj_len = 5
+    data.max_traj_len = 25
+    data.gamma = 0.9
     data.reward_final = 10
     data.random_flip = True
     data.with_reversed_actions = True
