@@ -1,24 +1,18 @@
 import os
+import time
 import wandb
-
 from typing import Any
 from collections import defaultdict
 from pathlib import Path
 from coolname import generate_slug
 
+import optax
 import jax
+import flax.jax_utils as flax_utils
 from jax import numpy as jnp
 from flax import linen as nn
 from flax.training import train_state
 from flax.training import checkpoints
-from flax.core import freeze, unfreeze
-import time
-
-import math
-from . import dataset
-
-import optax
-
 
 
 CHECKPOINT_PATH = "./checkpoints/td_sarsa"
@@ -67,8 +61,8 @@ class TrainerModule:
         self.gamma = config.data.gamma
         self.ema = config.train.ema
 
-        self.create_functions(config)    # Create jitted training and eval functions
-        self.init_model(config.model.optimizer, {"lr": config.train.lr, "weight_decay": config.model.optimizer_weight_decay}) # Initialize model
+        self.create_functions()
+        self.init_model(config.model.optimizer, {"lr": config.train.lr, "weight_decay": config.model.optimizer_weight_decay})
 
         # Prepare logging
         self.checkpoint_dir = os.path.abspath(os.path.join(CHECKPOINT_PATH, f"{self.model_name}_{str(version)}"))
@@ -86,12 +80,12 @@ class TrainerModule:
                                            resume="allow")
 
 
-    def create_functions(self, config):
+    def create_functions(self):
         def calculate_loss(variables: dict,
                            variables_target: dict,
                            batch: tuple[jnp.ndarray, jnp.ndarray],
                            train: bool,
-                           rng_key: jax.Array):
+                           rng_key: jax.Array) -> tuple[jnp.ndarray, dict]:
             sarsa_batch, rewards = batch
             states_actions = sarsa_batch[:, :, :, :6]
             next_states_actions = sarsa_batch[:, :, :, 6:]
@@ -117,12 +111,18 @@ class TrainerModule:
 
             loss = optax.l2_loss(q_values, q_values_target).mean()
             return loss, new_model_state
-        
+
+        def sync_batch_stats(state: TrainState) -> TrainState:
+            if state.batch_stats is not None:
+                batch_stats = jax.lax.pmean(state.batch_stats, axis_name="devices")
+                return state.replace(batch_stats=batch_stats)
+            return state
+
         def train_step_pmap(state: TrainState,
-                           state_target: TrainState,
-                           batch: tuple[jnp.ndarray, jnp.ndarray],
-                           rng_key: jax.Array,
-                           update_batch_stats: bool = False):
+                            state_target: TrainState,
+                            batch: tuple[jnp.ndarray, jnp.ndarray],
+                            rng_key: jax.Array,
+                            update_batch_stats: bool=False) -> tuple[TrainState, jnp.ndarray]:
             
             state = jax.lax.cond(update_batch_stats, sync_batch_stats, lambda x: x, state)
             
@@ -134,30 +134,18 @@ class TrainerModule:
 
             (loss, new_model_state), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
             
-            grads = jax.lax.pmean(grads, axis_name='devices')
+            grads = jax.lax.pmean(grads, axis_name="devices")
             state = state.apply_gradients(grads=grads, batch_stats=new_model_state["batch_stats"])
-            loss = jax.lax.pmean(loss, axis_name='devices')
+            loss = jax.lax.pmean(loss, axis_name="devices")
             
             return state, loss
 
-        def sync_batch_stats(state):
-            """Synchronize batch statistics across devices."""
-            if state.batch_stats is not None:
-                batch_stats = jax.lax.pmean(state.batch_stats, axis_name='devices')
-                return state.replace(batch_stats=batch_stats)
-            return state
+        self.train_step_pmap = jax.pmap(train_step_pmap, axis_name="devices")
 
-        self.train_step_pmap = jax.pmap(train_step_pmap, axis_name='devices')
-        self.sync_batch_stats = sync_batch_stats
-
-    def _get_first_device_state(self, state):
-        if self.num_devices == 1:
-            return state
-        return jax.tree.map(lambda x: x[0], state)
 
     def init_model(self,
                    opt_name: str,
-                   opt_hparams: dict):
+                   opt_hparams: dict) -> None:
         init_rng = jax.random.PRNGKey(self.seed)
 
         per_device_batch_size = self.batch_size // self.num_devices
@@ -174,7 +162,6 @@ class TrainerModule:
         lr = opt_hparams.pop("lr")
         optimizer = optax.chain(optax.clip(1.0), opt_class(lr, **opt_hparams))
         
-        # Initialize training state
         state = TrainState.create(apply_fn=self.model.apply,
                                        params=variables["params"],
                                        batch_stats=variables["batch_stats"],
@@ -185,18 +172,18 @@ class TrainerModule:
                                               batch_stats=variables_target["batch_stats"],
                                               tx=optax.identity()) # dummy optimizer for target model
 
-        self.state = jax.device_put_replicated(state, jax.local_devices())
-        self.state_target = jax.device_put_replicated(state_target, jax.local_devices())
+        self.state = flax_utils.replicate(state)
+        self.state_target = flax_utils.replicate(state_target)
+
 
     def train_model(self,
                     train_ds,
-                    rng_key: jax.Array | None = None):
+                    rng_key: jax.Array | None = None) -> None:
         rng_key = rng_key or jax.random.PRNGKey(self.seed)
         metrics = defaultdict(list)
         batch_time = time.time()
 
         train_iter = iter(train_ds)
-
         for step in range(self.initial_step, self.n_steps):
             rng_key, train_rng_key = jax.random.split(rng_key, num=2)
             train_rng_keys = jax.random.split(train_rng_key, self.num_devices)
@@ -209,7 +196,7 @@ class TrainerModule:
                                                     rng_key=train_rng_keys,
                                                     update_batch_stats=update_batch_stats)
 
-            loss = loss[0]
+            loss = loss.mean()
             
             if not self.wandb_track:
                 continue
@@ -227,33 +214,37 @@ class TrainerModule:
                 batch_time = time.time()
 
             if step % self.update_target_every == 0 and step != self.initial_step:
-                self.state_target = self.update_target(mode="soft")
+                self.update_target(mode="soft")
 
             if step % self.save_every == 0 and step != self.initial_step:
                 self.save_model(step=step)        
 
-    def update_target(self, mode: str="soft"):
+
+    def update_target(self, mode: str="soft") -> None:
         update_fns = {"soft": lambda current, target: (1 - self.ema) * current + self.ema * target, # 0.01 * cur + 0.99 * targ
                       "hard": lambda current, target: current}
         update_fn = update_fns[mode]
 
-        state = self._get_first_device_state(self.state)
-        state_target = self._get_first_device_state(self.state_target)
+        state = flax_utils.unreplicate(self.state)
+        state_target = flax_utils.unreplicate(self.state_target)
         
         params_new = jax.tree_util.tree_map(update_fn, state.params, state_target.params)
         batch_stats_new = jax.tree_util.tree_map(update_fn, state.batch_stats, state_target.batch_stats)
         
         new_state_target = state_target.replace(params=params_new, batch_stats=batch_stats_new)
+        self.state_target = flax_utils.replicate(new_state_target)
 
-        return jax.device_put_replicated(new_state_target, jax.local_devices())
 
-    def save_model(self, step: int=0):
+    def save_model(self, step: int=0) -> None:
         """Save current model"""
-        state_to_save = self._get_first_device_state(self.state)
+        state_to_save = flax_utils.unreplicate(self.state)
+        state_target_to_save = flax_utils.unreplicate(self.state_target)
         
         checkpoints.save_checkpoint(ckpt_dir=self.checkpoint_dir,
                                     target={"params": state_to_save.params,
                                             "batch_stats": state_to_save.batch_stats,
+                                            "params_target": state_target_to_save.params,
+                                            "batch_stats_target": state_target_to_save.batch_stats,
                                             "step": step,
                                             "wandb_run_id": self.wandb_logger.id if self.wandb_track else None,
                                             "wandb_run_step": wandb.run.step if self.wandb_track else 0},
@@ -261,20 +252,21 @@ class TrainerModule:
                                     overwrite=False,
                                     keep=100)
 
+
     def load_model(self) -> None:
         state_dict = checkpoints.restore_checkpoint(ckpt_dir=self.checkpoint_dir, target=None)
         state = TrainState.create(apply_fn=self.model.apply,
-                                       params=state_dict["params"],
-                                       batch_stats=state_dict["batch_stats"],
-                                       tx=self.state.tx)
+                                  params=state_dict["params"],
+                                  batch_stats=state_dict["batch_stats"],
+                                  tx=self.state.tx)
         
         state_target = TrainState.create(apply_fn=self.target_model.apply,
-                                              params=state_dict["params"],
-                                              batch_stats=state_dict["batch_stats"],
-                                              tx=optax.identity()) # dummy optimizer for target model
+                                         params=state_dict["params_target"],
+                                         batch_stats=state_dict["batch_stats_target"],
+                                         tx=optax.identity()) # dummy optimizer for target model
         
-        self.state = jax.device_put_replicated(state, jax.local_devices())
-        self.state_target = jax.device_put_replicated(state_target, jax.local_devices())
+        self.state = flax_utils.replicate(state)
+        self.state_target = flax_utils.replicate(state_target)
             
         self.initial_step = state_dict.get("step", 0)
         wandb_run_id = state_dict.get("wandb_run_id", None)
@@ -282,6 +274,7 @@ class TrainerModule:
             self.wandb_logger = wandb.init(project="cifar10", id=wandb_run_id)
 
         print(f"Loaded model from step {self.initial_step}")
+
 
     def checkpoint_exists(self) -> bool:
         return any(item.is_dir() for item in Path(self.checkpoint_dir).iterdir())
