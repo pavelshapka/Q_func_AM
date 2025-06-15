@@ -114,10 +114,10 @@ class RegressionInceptionNetV1(nn.Module):
         x = max_pool(inputs=x,
                      window_shape=(3, 3),
                      strides=(2, 2))
+
         x = InceptionBlock(out_channels={"conv1x1": 192, "conv3x3": 208, "conv5x5": 48, "max_pool": 64},
                            reduced_channels={"conv3x3": 96, "conv5x5": 16},
                            activation=self.activation)(x, train)
-        
         x = InceptionBlock(out_channels={"conv1x1": 160, "conv3x3": 224, "conv5x5": 64, "max_pool": 64},
                            reduced_channels={"conv3x3": 112, "conv5x5": 24},
                            activation=self.activation)(x, train)
@@ -127,20 +127,21 @@ class RegressionInceptionNetV1(nn.Module):
         x = InceptionBlock(out_channels={"conv1x1": 112, "conv3x3": 288, "conv5x5": 64, "max_pool": 64},
                            reduced_channels={"conv3x3": 144, "conv5x5": 32},
                            activation=self.activation)(x, train)
-        
         x = InceptionBlock(out_channels={"conv1x1": 256, "conv3x3": 320, "conv5x5": 128, "max_pool": 128},
                            reduced_channels={"conv3x3": 160, "conv5x5": 32},
                            activation=self.activation)(x, train)
         x = max_pool(inputs=x,
                      window_shape=(3, 3),
                      strides=(2, 2))
+
         x = InceptionBlock(out_channels={"conv1x1": 256, "conv3x3": 320, "conv5x5": 128, "max_pool": 128},
-                    reduced_channels={"conv3x3": 160, "conv5x5": 32},
-                    activation=self.activation)(x, train)
+                           reduced_channels={"conv3x3": 160, "conv5x5": 32},
+                           activation=self.activation)(x, train)
         x = InceptionBlock(out_channels={"conv1x1": 384, "conv3x3": 384, "conv5x5": 128, "max_pool": 128},
-                    reduced_channels={"conv3x3": 192, "conv5x5": 48},
-                    activation=self.activation)(x, train)
+                           reduced_channels={"conv3x3": 192, "conv5x5": 48},
+                           activation=self.activation)(x, train)
         x = jnp.mean(x, axis=(1, 2))
+
         x = nn.Dropout(rate=0.4)(x, deterministic=not train, rng=train_rng)
         x = nn.Dense(features=1,
                      kernel_init=nn.initializers.kaiming_normal(),
