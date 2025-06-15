@@ -15,11 +15,10 @@ def crop_resize(image, resolution):
     h, w = tf.shape(image)[0], tf.shape(image)[1]
     image = image[(h - crop) // 2:(h + crop) // 2, 
                   (w - crop) // 2:(w + crop) // 2]
-    image = tf.image.resize(
-        image,
-        size=(resolution, resolution),
-        antialias=True,
-        method=tf.image.ResizeMethod.BICUBIC)
+    image = tf.image.resize(image,
+                            size=(resolution, resolution),
+                            antialias=True,
+                            method=tf.image.ResizeMethod.BICUBIC)
     return tf.cast(image, tf.uint8)
 
 def get_dataset(config,
@@ -27,12 +26,11 @@ def get_dataset(config,
                 evaluation=False):
   
     batch_size = config.train.batch_size if not evaluation else config.eval.batch_size
-    num_devices = jax.local_device_count()
     per_device_batch_size = batch_size // jax.device_count()
     shuffle_buffer_size = 10000
     prefetch_size = tf.data.experimental.AUTOTUNE
     num_epochs = None if not evaluation else 1
-    batch_dims = [num_devices, per_device_batch_size] if config.multi_device else [batch_size]
+    batch_dims = [jax.local_device_count(), per_device_batch_size]
     
     print(f"Batch dimensions: {batch_dims}")
 
@@ -60,8 +58,11 @@ def get_dataset(config,
         with_reversed_actions = config.data.with_reversed_actions
         with_random_actions = config.data.with_random_actions
 
-        num_steps = tf.random.uniform((), minval=min_num_steps, maxval=max_num_steps, dtype=tf.int32)
-        z = tf.random.normal(tf.shape(image), dtype=image.dtype)
+        num_steps = tf.random.uniform(shape=(),
+                                      minval=min_num_steps,
+                                      maxval=max_num_steps,
+                                      dtype=tf.int32)
+        z = tf.random.normal(shape=tf.shape(image), dtype=image.dtype)
 
         ts = math.sqrt(2) * tf.range(num_steps, dtype=tf.float32) % 1.0 # Имитация равномерного распределения
         ts = tf.sort(ts, direction='ASCENDING')
@@ -69,14 +70,14 @@ def get_dataset(config,
 
         trajectory = z * (1 - ts) + image * ts # [None, 32, 32, 3] * [num_steps, None, None, None]
 
-        s = trajectory[:-2]                # [num_steps-1, 32, 32, 3] предотвращаем обучение на нулевое действие в качестве оптимального
-        s_next = trajectory[1:len(trajectory)-1]            # [num_steps-1, 32, 32, 3]
-        a = s_next - s                     # [num_steps-1, 32, 32, 3]
-        a_next = image[None, ...] - s_next # [num_steps-1, 32, 32, 3]
+        s = trajectory[:-2]                      # [num_steps-2, 32, 32, 3] предотвращаем обучение на нулевое действие в качестве оптимального
+        s_next = trajectory[1:len(trajectory)-1] # [num_steps-2, 32, 32, 3]
+        a = s_next - s                           # [num_steps-2, 32, 32, 3]
+        a_next = image[None, ...] - s_next       # [num_steps-2, 32, 32, 3]
 
-        rewards = reward * (gamma ** tf.range(tf.shape(s)[0], 0, -1, dtype=tf.float32)) # [num_steps-1]
+        rewards = reward * (gamma ** tf.range(tf.shape(s)[0], 0, -1, dtype=tf.float32)) # [num_steps-2]
 
-        transitions = tf.concat([s, a, s_next, a_next], axis=-1) # [num_steps-1, 32, 32, 3*4=12]
+        transitions = tf.concat([s, a, s_next, a_next], axis=-1) # [num_steps-2, 32, 32, 3*4=12]
 
         if with_reversed_actions:
             s_rev = trajectory[1:]
@@ -123,7 +124,7 @@ def get_dataset(config,
         ds = ds.map(lambda image, _: generate_sarsa_opt_trajectory(image=image), num_parallel_calls=tf.data.AUTOTUNE)
         ds = ds.flat_map(lambda transitions, rewards: tf.data.Dataset.from_tensor_slices((transitions, rewards)))
         if not evaluation:
-            ds = ds.shuffle(shuffle_buffer_size) # перемешивание
+            ds = ds.shuffle(shuffle_buffer_size)
         for batch_size in reversed(batch_dims):
             ds = ds.batch(batch_size, drop_remainder=True)
         return ds.prefetch(prefetch_size) # загружает данные в фоновом режиме
